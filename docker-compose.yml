@@ -1,0 +1,38 @@
+services:
+  postgres:
+    # Local bootstrap uses cached PostgreSQL. Switch to pgvector/pgvector before enabling embeddings.
+    image: postgres:15-alpine
+    container_name: lumimate-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lumimate
+      POSTGRES_USER: lumimate
+      POSTGRES_PASSWORD: lumimate
+    ports:
+      - '5433:5432'
+    volumes:
+      - lumimate-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lumimate -d lumimate']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: lumimate-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    ports:
+      - '6380:6379'
+    volumes:
+      - lumimate-redis:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  lumimate-postgres:
+  lumimate-redis:
