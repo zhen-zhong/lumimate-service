@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { AI_CHAT_ROUTER, type AiChatMessage, type AiChatProvider } from '../ai/interfaces/ai-chat-provider';
+import { AI_CHAT_ROUTER, type AiChatMessage, type AiChatProvider, type AiChatStreamEvent } from '../ai/interfaces/ai-chat-provider';
 import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
 
 export type AgentRunInput = {
@@ -23,7 +23,7 @@ export class AgentRunner {
     private readonly models: AiModelCatalogService,
   ) {}
 
-  async *stream(input: AgentRunInput): AsyncGenerator<string> {
+  async *stream(input: AgentRunInput): AsyncGenerator<AiChatStreamEvent> {
     if (!await this.models.findEnabled(input.modelId)) {
       throw new Error('当前聊天模型已停用，请在高级设置中重新选择');
     }

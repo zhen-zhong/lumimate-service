@@ -61,6 +61,12 @@ export class ChatController {
     }
   }
 
+  @Get(':conversationId/messages')
+  @ApiOperation({ summary: '获取会话历史消息' })
+  listMessages(@Param('conversationId') conversationId: string) {
+    return this.chatService.listMessages(conversationId);
+  }
+
   @Get(':conversationId/settings')
   @ApiOperation({ summary: '获取会话助手设置' })
   @ApiOkResponse(settingsResponse)

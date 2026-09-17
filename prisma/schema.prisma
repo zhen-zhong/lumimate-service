@@ -83,6 +83,12 @@ model Message {
   status         MessageStatus @default(COMPLETED)
   content        String        @db.Text
   metadata       Json?
+  modelId        String?
+  modelLabel     String?
+  provider       String?
+  protocol       String?
+  inputTokens    Int?
+  outputTokens   Int?
   createdAt      DateTime      @default(now())
   conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 

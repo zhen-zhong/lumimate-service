@@ -1,7 +1,7 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import OpenAI from 'openai';
 
-import type { AiChatProvider, AiChatRequest } from '../interfaces/ai-chat-provider';
+import type { AiChatProvider, AiChatRequest, AiChatStreamEvent } from '../interfaces/ai-chat-provider';
 
 export type OpenAiCompatibleProviderConfig = {
   id: string;
@@ -21,7 +21,7 @@ export class OpenAiCompatibleChatProvider implements AiChatProvider {
     this.model = config.model;
   }
 
-  async *streamChat(input: AiChatRequest): AsyncGenerator<string> {
+  async *streamChat(input: AiChatRequest): AsyncGenerator<AiChatStreamEvent> {
     if (!this.client) {
       throw new ServiceUnavailableException(`未配置 ${this.id} Provider API Key`);
     }
@@ -29,6 +29,7 @@ export class OpenAiCompatibleChatProvider implements AiChatProvider {
     const stream = await this.client.chat.completions.create({
       model: input.modelId || this.model,
       stream: true,
+      stream_options: { include_usage: true },
       messages: [
         { role: 'system', content: input.systemPrompt },
         ...input.messages.map((message) => message.role === 'user'
@@ -50,7 +51,16 @@ export class OpenAiCompatibleChatProvider implements AiChatProvider {
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta.content;
-      if (delta) yield delta;
+      if (delta) yield { type: 'delta', delta };
+      if (chunk.usage) {
+        yield {
+          type: 'usage',
+          usage: {
+            inputTokens: chunk.usage.prompt_tokens ?? undefined,
+            outputTokens: chunk.usage.completion_tokens ?? undefined,
+          },
+        };
+      }
     }
   }
 }

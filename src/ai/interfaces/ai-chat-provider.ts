@@ -15,9 +15,18 @@ export type AiChatRequest = {
   messages: AiChatMessage[];
 };
 
+export type AiTokenUsage = {
+  inputTokens?: number;
+  outputTokens?: number;
+};
+
+export type AiChatStreamEvent =
+  | { type: 'delta'; delta: string }
+  | { type: 'usage'; usage: AiTokenUsage };
+
 export interface AiChatProvider {
   readonly id: string;
-  streamChat(input: AiChatRequest): AsyncGenerator<string>;
+  streamChat(input: AiChatRequest): AsyncGenerator<AiChatStreamEvent>;
 }
 
 export const AI_CHAT_ROUTER = Symbol('AI_CHAT_ROUTER');

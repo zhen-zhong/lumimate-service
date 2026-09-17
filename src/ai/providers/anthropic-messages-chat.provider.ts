@@ -1,6 +1,6 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 
-import type { AiChatMessage, AiChatProvider, AiChatRequest } from '../interfaces/ai-chat-provider';
+import type { AiChatMessage, AiChatProvider, AiChatRequest, AiChatStreamEvent } from '../interfaces/ai-chat-provider';
 
 export type AnthropicMessagesProviderConfig = {
   id: string;
@@ -28,7 +28,7 @@ export class AnthropicMessagesChatProvider implements AiChatProvider {
     this.id = config.id;
   }
 
-  async *streamChat(input: AiChatRequest): AsyncGenerator<string> {
+  async *streamChat(input: AiChatRequest): AsyncGenerator<AiChatStreamEvent> {
     if (!this.config.apiKey) {
       throw new ServiceUnavailableException(`未配置 ${this.id} Provider API Key`);
     }
@@ -57,6 +57,8 @@ export class AnthropicMessagesChatProvider implements AiChatProvider {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -68,8 +70,17 @@ export class AnthropicMessagesChatProvider implements AiChatProvider {
           const data = frame.split('\n').find((line) => line.startsWith('data:'))?.slice(5).trim();
           if (data) {
             try {
-              const event = JSON.parse(data) as { type?: string; delta?: { text?: string }; error?: { message?: string } };
-              if (event.type === 'content_block_delta' && event.delta?.text) yield event.delta.text;
+              const event = JSON.parse(data) as {
+                type?: string;
+                delta?: { text?: string; usage?: { output_tokens?: number } };
+                message?: { usage?: { input_tokens?: number } };
+                usage?: { input_tokens?: number; output_tokens?: number };
+                error?: { message?: string };
+              };
+              inputTokens ??= event.message?.usage?.input_tokens ?? event.usage?.input_tokens;
+              outputTokens = event.delta?.usage?.output_tokens ?? event.usage?.output_tokens ?? outputTokens;
+              if (event.type === 'content_block_delta' && event.delta?.text) yield { type: 'delta', delta: event.delta.text };
+              if (event.type === 'message_delta') yield { type: 'usage', usage: { inputTokens, outputTokens } };
               if (event.type === 'error') throw new ServiceUnavailableException(event.error?.message || 'Anthropic Messages 请求失败');
             } catch (error) {
               if (error instanceof ServiceUnavailableException) throw error;
