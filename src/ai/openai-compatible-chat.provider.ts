@@ -31,7 +31,7 @@ export class OpenAiCompatibleChatProvider implements AiChatProvider {
       stream: true,
       messages: [
         { role: 'system', content: input.systemPrompt },
-        { role: 'user', content: input.userContent },
+        ...input.messages,
       ],
     });
 

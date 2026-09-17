@@ -46,13 +46,17 @@ model User {
 }
 
 model Conversation {
-  id        String    @id @default(cuid())
-  userId    String
-  title     String?
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  messages  Message[]
+  id                  String    @id @default(cuid())
+  userId              String
+  title               String?
+  agentName           String    @default("LumiMate")
+  agentProfile        String    @default("") @db.Text
+  responseStyle       String    @default("温和、简洁")
+  contextMessageLimit Int       @default(100)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages            Message[]
 
   @@index([userId, updatedAt])
 }

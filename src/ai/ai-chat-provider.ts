@@ -1,6 +1,11 @@
+export type AiChatMessage = {
+  role: 'user' | 'assistant';
+  content: string;
+};
+
 export type AiChatRequest = {
   systemPrompt: string;
-  userContent: string;
+  messages: AiChatMessage[];
 };
 
 export interface AiChatProvider {

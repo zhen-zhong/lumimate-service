@@ -139,18 +139,52 @@ npm run infra:up   # 启动 PostgreSQL、Redis
 npm run infra:down # 停止 PostgreSQL、Redis
 ```
 
-## 目录
+## 目录与职责
 
 ```text
-src/
-  chat/       SSE 聊天入口；后续接入 AgentRunner
-  ai/         模型 Provider Registry 与 OpenAI-compatible Adapter
-  agent/      Agent 编排层；后续接入工具调用、记忆、权限校验
-  database/   Prisma 生命周期管理
-  health/     PostgreSQL、Redis 健康检查
-  tasks/      BullMQ 定时任务队列
-prisma/       数据模型与 migration
+lumimate-service/
+├── prisma/
+│   └── migrations/
+├── src/
+│   ├── agent/
+│   ├── ai/
+│   ├── chat/
+│   ├── database/
+│   ├── health/
+│   └── tasks/
+├── .env                 # 本机私有配置，Git 忽略
+├── .env.example         # 可提交的环境变量模板
+├── docker-compose.yml
+├── README.md
+├── TODO.md
+├── package.json
+└── tsconfig*.json
 ```
+
+| 目录/文件 | 职责 |
+| --- | --- |
+| `src/` | 应用源码。模块之间通过 NestJS DI 连接，避免聊天、模型、数据库逻辑互相耦合。 |
+| `src/main.ts` | 应用入口。启动 Fastify、全局 `/v1` 前缀、CORS 与请求 DTO 校验。 |
+| `src/app.module.ts` | 根模块。组装 Config、BullMQ、数据库、AI、Agent、聊天、健康检查和任务模块。 |
+| `src/ai/` | 模型 Provider 层。`AiChatProvider` 是统一接口；`AiModule` 按 `AI_PROVIDER` 选择 Provider；`OpenAiCompatibleChatProvider` 适配 DeepSeek 和其他兼容 OpenAI Chat Completions API 的服务。新增模型服务优先放这里。 |
+| `src/agent/` | Agent 编排层。`AgentRunner` 负责系统提示词、上下文和后续工具调用流程，只依赖 `AiChatProvider`，不直接依赖 DeepSeek 或其他模型 SDK。 |
+| `src/chat/` | App 聊天 HTTP/SSE 接口。接收用户消息，调用 `AgentRunner`，将 `message.created`、`message.delta`、`message.completed` 或 `error` 推给客户端。后续消息持久化、图片/音频引用也放这里。 |
+| `src/database/` | PrismaClient 生命周期。应用启动连接 PostgreSQL，关闭时断开；业务模块通过 `PrismaService` 访问数据库。 |
+| `src/health/` | `GET /v1/health`。检查 PostgreSQL 查询和 Redis `PING`，用于本地排查、容器探针和部署监控。 |
+| `src/tasks/` | BullMQ 队列注册。后续定时提醒、主动陪伴、文档解析、推送发送等后台任务放这里。 |
+| `prisma/` | 数据库定义与版本记录。`schema.prisma` 是数据模型唯一来源。 |
+| `prisma/migrations/` | Prisma 生成的数据库变更历史。必须提交；新环境通过 migration 还原表结构。禁止手改已应用 migration。 |
+| `docker-compose.yml` | 本地 PostgreSQL、Redis 容器及数据卷。当前映射到主机 `5433`、`6380`。 |
+| `.env` | 本机密钥与连接配置，例如 `DEEPSEEK_API_KEY`。绝不提交。 |
+| `.env.example` | `.env` 模板。只保留变量名、示例值和无敏感配置，可提交。 |
+| `package.json` | Node 依赖、脚本、Node 版本要求。 |
+| `package-lock.json` | 精确依赖锁定文件。必须和 `package.json` 一起提交。 |
+| `nest-cli.json` | NestJS CLI 源码目录配置。 |
+| `tsconfig.json` | TypeScript 编译与装饰器配置。 |
+| `tsconfig.build.json` | 生产构建排除规则，例如测试文件。 |
+| `TODO.md` | 功能分期、未完成事项与架构边界。 |
+| `dist/` | `npm run build` 生成的编译产物，Git 忽略。 |
+| `node_modules/` | npm 安装的依赖，Git 忽略。 |
 
 ## 后续 Agent 设计
 
