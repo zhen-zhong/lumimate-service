@@ -1,7 +1,7 @@
 import { ServiceUnavailableException } from '@nestjs/common';
 import OpenAI from 'openai';
 
-import type { AiChatProvider, AiChatRequest } from './ai-chat-provider';
+import type { AiChatProvider, AiChatRequest } from '../interfaces/ai-chat-provider';
 
 export type OpenAiCompatibleProviderConfig = {
   id: string;
@@ -27,11 +27,24 @@ export class OpenAiCompatibleChatProvider implements AiChatProvider {
     }
 
     const stream = await this.client.chat.completions.create({
-      model: this.model,
+      model: input.modelId || this.model,
       stream: true,
       messages: [
         { role: 'system', content: input.systemPrompt },
-        ...input.messages,
+        ...input.messages.map((message) => message.role === 'user'
+          ? {
+              role: 'user' as const,
+              content: message.images?.length
+                ? [
+                    { type: 'text' as const, text: message.content },
+                    ...message.images.map((image) => ({
+                      type: 'image_url' as const,
+                      image_url: { url: image.url },
+                    })),
+                  ]
+                : message.content,
+            }
+          : { role: 'assistant' as const, content: message.content }),
       ],
     });
 

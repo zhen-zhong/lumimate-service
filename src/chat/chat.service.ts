@@ -1,11 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MessageRole, MessageStatus, Prisma } from '@prisma/client';
 
 import { AgentRunner } from '../agent/agent-runner.service';
+import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
+import { DEFAULT_CHAT_MODEL_ID } from '../ai/model-catalog';
 import { PrismaService } from '../database/prisma.service';
-import type { CreateMessageDto } from './create-message.dto';
-import type { UpdateChatSettingsDto } from './update-chat-settings.dto';
+import type { CreateMessageDto } from './dto/create-message.dto';
+import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 
 export type ChatEvent = {
   type: 'message.created' | 'message.delta' | 'message.completed' | 'error';
@@ -15,6 +17,13 @@ export type ChatEvent = {
 const LOCAL_USER_ID = 'local-user';
 const DEFAULT_CONTEXT_MESSAGE_LIMIT = 100;
 const HARD_MAX_CONTEXT_MESSAGE_LIMIT = 1_000;
+const SUPPORTED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+
+function isSupportedImageUrl(value: unknown, mimeType: unknown): value is string {
+  return typeof value === 'string' &&
+    SUPPORTED_IMAGE_MIME_TYPES.includes(String(mimeType)) &&
+    (value.startsWith(`data:${mimeType};base64,`) || /^https?:\/\//i.test(value));
+}
 
 function getContextMessageLimit(value?: string) {
   const parsed = Number(value);
@@ -28,6 +37,7 @@ export class ChatService {
 
   constructor(
     private readonly agentRunner: AgentRunner,
+    private readonly models: AiModelCatalogService,
     private readonly prisma: PrismaService,
     config: ConfigService,
   ) {
@@ -35,6 +45,10 @@ export class ChatService {
   }
 
   async *stream(input: CreateMessageDto & { conversationId: string }): AsyncGenerator<ChatEvent> {
+    const images = input.attachments?.filter((attachment) =>
+      isSupportedImageUrl(attachment.url, attachment.mimeType),
+    ) ?? [];
+
     const conversation = await this.ensureConversation(input.conversationId);
     const history = await this.prisma.message.findMany({
       where: {
@@ -80,12 +94,17 @@ export class ChatService {
         agentName: conversation.agentName,
         agentProfile: conversation.agentProfile,
         responseStyle: conversation.responseStyle,
+        modelId: conversation.modelId,
         messages: [
           ...history.map((message) => ({
             role: message.role === MessageRole.USER ? 'user' as const : 'assistant' as const,
             content: message.content,
           })),
-          { role: 'user', content: input.content },
+          {
+            role: 'user',
+            content: input.content,
+            images,
+          },
         ],
       })) {
         content += delta;
@@ -121,6 +140,7 @@ export class ChatService {
         id: conversationId,
         userId: LOCAL_USER_ID,
         contextMessageLimit: this.contextMessageLimit,
+        modelId: DEFAULT_CHAT_MODEL_ID,
       },
     });
   }
@@ -132,6 +152,9 @@ export class ChatService {
 
   async updateSettings(conversationId: string, settings: UpdateChatSettingsDto) {
     await this.ensureConversation(conversationId);
+    if (settings.modelId && !await this.models.findEnabled(settings.modelId)) {
+      throw new BadRequestException('所选模型不存在或已停用');
+    }
     const conversation = await this.prisma.conversation.update({
       where: { id: conversationId },
       data: settings,
@@ -143,12 +166,14 @@ export class ChatService {
     agentName: string;
     agentProfile: string;
     responseStyle: string;
+    modelId: string;
     contextMessageLimit: number;
   }) {
     return {
       agentName: conversation.agentName,
       agentProfile: conversation.agentProfile,
       responseStyle: conversation.responseStyle,
+      modelId: conversation.modelId,
       contextMessageLimit: conversation.contextMessageLimit,
       maxContextMessageLimit: HARD_MAX_CONTEXT_MESSAGE_LIMIT,
     };

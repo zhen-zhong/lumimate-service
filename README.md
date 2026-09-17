@@ -44,38 +44,47 @@ npm run start:dev
 
 服务默认监听 `http://localhost:3000`。
 
+## API 文档
+
+启动服务后访问 Swagger UI：`http://localhost:3000/docs`；OpenAPI JSON：`http://localhost:3000/docs-json`。接口路径统一以 `/v1` 开头。当前文档包含健康检查、会话设置与流式聊天接口；聊天消息的响应是 `text/event-stream`，建议使用 `curl -N` 或支持 SSE 的客户端查看完整事件流。
+
 ## AI Provider 配置
 
-聊天与 Agent 仅依赖 `AgentRunner` 和 `AiChatProvider`，不依赖 DeepSeek。当前已内置：
+模型由每个智能体的“高级设置 → 聊天模型”保存到会话。客户端只发送模型 ID；所有密钥只保留在服务端 `.env`。
 
-- `deepseek`：DeepSeek Provider。
-- `openai-compatible`：任何兼容 OpenAI Chat Completions API 的模型服务。
-
-### DeepSeek
-
-在 [DeepSeek 开放平台](https://platform.deepseek.com/) 创建 API Key，将其仅写入服务端 `.env`：
+可用模型接口：`GET /v1/ai/models`。接口只返回 `AiModel.enabled=true` 的模型；角色设置页通过此接口加载候选项。停用模型时在数据库中将对应行的 `enabled` 改为 `false`，该模型会从客户端隐藏，且不能保存或继续发起聊天。
 
 ```dotenv
-AI_PROVIDER=deepseek
 DEEPSEEK_API_KEY=sk-your-key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-flash
+
+HALOMOBI_BASE_URL=https://token.halomobi.com/v1
+HALOMOBI_GPT_IMAGE_2_API_KEY=key-for-gpt-image-2
+HALOMOBI_CLAUDE_OPUS_4_7_API_KEY=key-for-claude-opus-4-7
+HALOMOBI_CLAUDE_OPUS_4_8_API_KEY=key-for-claude-opus-4-8
+HALOMOBI_GPT_5_6_LUNA_API_KEY=key-for-gpt-5.6-luna
+HALOMOBI_GPT_5_6_SOL_API_KEY=key-for-gpt-5.6-sol
+HALOMOBI_GPT_6_ASTRA_API_KEY=key-for-gpt-6-astra
 ```
 
-### 其他 OpenAI-compatible 服务
+模型协议固定由服务端白名单决定：
 
-```dotenv
-AI_PROVIDER=openai-compatible
-AI_COMPATIBLE_API_KEY=provider-api-key
-AI_COMPATIBLE_BASE_URL=https://provider.example.com/v1
-AI_COMPATIBLE_MODEL=provider-model-id
+- `deepseek-flash`（DeepSeek-V4.1-Flash）、`deepseek-v4-pro`（DeepSeek-V4.1-Pro）：DeepSeek，OpenAI Chat Completions，共用 `DEEPSEEK_API_KEY`。
+- `gpt-image-2`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-6-astra`：HaloMobi，OpenAI Chat Completions。
+- `claude-opus-4-7`、`claude-opus-4-8`：HaloMobi，Anthropic Messages。
+
+不在白名单中的模型 ID 会被设置接口拒绝。未配置某个 Provider 的 Key 时，仅该 Provider 的聊天请求返回 SSE `error`，不会影响已配置模型。
+
+`deepseek-flash` 已支持图片理解。发送消息时在 `attachments` 中提供公开 HTTP(S) 地址，或 `data:image/...;base64,...`；本次图片会与文字传给模型，历史消息仅保留文本上下文，避免旧图片失效或重复产生视觉 token 费用。LumiMate 客户端会将所选图片压缩后转为 Base64 data URL，无需公网图床。单次 API 请求上限为 `16 MiB`，客户端限制单张图片约 `11 MiB`。
+
+```bash
+curl -N -X POST http://localhost:3000/v1/chats/local/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"这张图片里有什么？","attachments":[{"url":"https://example.com/photo.jpg","mimeType":"image/jpeg"}]}'
 ```
 
-切换只需修改 `.env` 并重启服务，无需改聊天或 Agent 代码。未配置 Key 时，接口返回 SSE `error`，不会降级为伪造 AI 回复。
-
-### 不兼容 OpenAI API 的第三方
-
-在 `src/ai/` 新建一个实现 `AiChatProvider` 的类，在 `AiModule` 注册 `AI_PROVIDER` 分支即可。不要把第三方 SDK、鉴权、流式协议或模型参数泄漏到 `chat/`、`agent/` 模块。
+新增模型时，在 `src/ai/model-catalog.ts` 登记模型 ID、协议、Provider；协议实现仍隔离在 `src/ai/providers/`，不泄漏到 `chat/`、`agent/` 模块。
 
 ## 本地依赖端口
 
@@ -144,47 +153,35 @@ npm run infra:down # 停止 PostgreSQL、Redis
 ```text
 lumimate-service/
 ├── prisma/
-│   └── migrations/
+│   ├── schema.prisma                     # Prisma 数据模型
+│   └── migrations/                      # 数据库迁移历史
 ├── src/
+│   ├── main.ts                          # Fastify 入口、校验和 Swagger
+│   ├── app.module.ts                    # 根模块
 │   ├── agent/
+│   │   ├── agent.module.ts
+│   │   └── agent-runner.service.ts      # 提示词与上下文编排
 │   ├── ai/
+│   │   ├── ai.module.ts                 # 模型服务选择与注入
+│   │   ├── interfaces/
+│   │   │   └── ai-chat-provider.ts      # 模型调用契约
+│   │   └── providers/
+│   │       └── openai-compatible-chat.provider.ts
 │   ├── chat/
-│   ├── database/
-│   ├── health/
-│   └── tasks/
-├── .env                 # 本机私有配置，Git 忽略
-├── .env.example         # 可提交的环境变量模板
-├── docker-compose.yml
-├── README.md
-├── TODO.md
+│   │   ├── chat.module.ts
+│   │   ├── chat.controller.ts           # 会话设置和 SSE 接口
+│   │   ├── chat.service.ts              # 消息持久化与流式聊天
+│   │   └── dto/                         # 请求参数及校验
+│   ├── database/                        # Prisma 连接生命周期
+│   ├── health/                          # PostgreSQL、Redis 健康检查
+│   └── tasks/                           # BullMQ 队列注册
+├── .env.example                         # 环境变量模板
+├── docker-compose.yml                   # 本地 PostgreSQL、Redis
 ├── package.json
-└── tsconfig*.json
+└── README.md
 ```
 
-| 目录/文件 | 职责 |
-| --- | --- |
-| `src/` | 应用源码。模块之间通过 NestJS DI 连接，避免聊天、模型、数据库逻辑互相耦合。 |
-| `src/main.ts` | 应用入口。启动 Fastify、全局 `/v1` 前缀、CORS 与请求 DTO 校验。 |
-| `src/app.module.ts` | 根模块。组装 Config、BullMQ、数据库、AI、Agent、聊天、健康检查和任务模块。 |
-| `src/ai/` | 模型 Provider 层。`AiChatProvider` 是统一接口；`AiModule` 按 `AI_PROVIDER` 选择 Provider；`OpenAiCompatibleChatProvider` 适配 DeepSeek 和其他兼容 OpenAI Chat Completions API 的服务。新增模型服务优先放这里。 |
-| `src/agent/` | Agent 编排层。`AgentRunner` 负责系统提示词、上下文和后续工具调用流程，只依赖 `AiChatProvider`，不直接依赖 DeepSeek 或其他模型 SDK。 |
-| `src/chat/` | App 聊天 HTTP/SSE 接口。接收用户消息，调用 `AgentRunner`，将 `message.created`、`message.delta`、`message.completed` 或 `error` 推给客户端。后续消息持久化、图片/音频引用也放这里。 |
-| `src/database/` | PrismaClient 生命周期。应用启动连接 PostgreSQL，关闭时断开；业务模块通过 `PrismaService` 访问数据库。 |
-| `src/health/` | `GET /v1/health`。检查 PostgreSQL 查询和 Redis `PING`，用于本地排查、容器探针和部署监控。 |
-| `src/tasks/` | BullMQ 队列注册。后续定时提醒、主动陪伴、文档解析、推送发送等后台任务放这里。 |
-| `prisma/` | 数据库定义与版本记录。`schema.prisma` 是数据模型唯一来源。 |
-| `prisma/migrations/` | Prisma 生成的数据库变更历史。必须提交；新环境通过 migration 还原表结构。禁止手改已应用 migration。 |
-| `docker-compose.yml` | 本地 PostgreSQL、Redis 容器及数据卷。当前映射到主机 `5433`、`6380`。 |
-| `.env` | 本机密钥与连接配置，例如 `DEEPSEEK_API_KEY`。绝不提交。 |
-| `.env.example` | `.env` 模板。只保留变量名、示例值和无敏感配置，可提交。 |
-| `package.json` | Node 依赖、脚本、Node 版本要求。 |
-| `package-lock.json` | 精确依赖锁定文件。必须和 `package.json` 一起提交。 |
-| `nest-cli.json` | NestJS CLI 源码目录配置。 |
-| `tsconfig.json` | TypeScript 编译与装饰器配置。 |
-| `tsconfig.build.json` | 生产构建排除规则，例如测试文件。 |
-| `TODO.md` | 功能分期、未完成事项与架构边界。 |
-| `dist/` | `npm run build` 生成的编译产物，Git 忽略。 |
-| `node_modules/` | npm 安装的依赖，Git 忽略。 |
+各 HTTP 接口位于对应模块的 controller 中，请求参数位于 `chat/dto/`；数据库模型统一定义于 `prisma/schema.prisma`，不在业务目录重复定义。当前没有自定义中间件，因此未建立空的 middleware 目录。`.env`、`dist/` 和 `node_modules/` 均不提交到 Git。
 
 ## 后续 Agent 设计
 

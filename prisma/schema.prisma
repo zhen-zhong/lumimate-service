@@ -52,6 +52,7 @@ model Conversation {
   agentName           String    @default("LumiMate")
   agentProfile        String    @default("") @db.Text
   responseStyle       String    @default("温和、简洁")
+  modelId             String    @default("deepseek-flash")
   contextMessageLimit Int       @default(100)
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
@@ -59,6 +60,20 @@ model Conversation {
   messages            Message[]
 
   @@index([userId, updatedAt])
+}
+
+model AiModel {
+  id        String   @id
+  label     String
+  provider  String
+  protocol  String
+  apiKeyEnv String?
+  enabled   Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([enabled, sortOrder])
 }
 
 model Message {

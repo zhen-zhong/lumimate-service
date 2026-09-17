@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { AI_CHAT_PROVIDER, type AiChatMessage, type AiChatProvider } from '../ai/ai-chat-provider';
+import { AI_CHAT_ROUTER, type AiChatMessage, type AiChatProvider } from '../ai/interfaces/ai-chat-provider';
+import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
 
 export type AgentRunInput = {
   conversationId: string;
@@ -8,6 +9,7 @@ export type AgentRunInput = {
   agentName: string;
   agentProfile: string;
   responseStyle: string;
+  modelId: string;
 };
 
 const SYSTEM_PROMPT = [
@@ -16,10 +18,17 @@ const SYSTEM_PROMPT = [
 
 @Injectable()
 export class AgentRunner {
-  constructor(@Inject(AI_CHAT_PROVIDER) private readonly provider: AiChatProvider) {}
+  constructor(
+    @Inject(AI_CHAT_ROUTER) private readonly provider: AiChatProvider,
+    private readonly models: AiModelCatalogService,
+  ) {}
 
-  stream(input: AgentRunInput): AsyncGenerator<string> {
-    return this.provider.streamChat({
+  async *stream(input: AgentRunInput): AsyncGenerator<string> {
+    if (!await this.models.findEnabled(input.modelId)) {
+      throw new Error('当前聊天模型已停用，请在高级设置中重新选择');
+    }
+    yield* this.provider.streamChat({
+      modelId: input.modelId,
       systemPrompt: [
         `你是 ${input.agentName}，一位温和、可靠的长期陪伴助手。`,
         input.agentProfile ? `角色设定：${input.agentProfile}` : null,
