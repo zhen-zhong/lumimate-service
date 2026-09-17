@@ -1,19 +1,20 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 
 import { PrismaService } from '../database/prisma.service';
-import { CHAT_MODELS } from './model-catalog';
+import { AI_MODELS } from './model-catalog';
 
 @Injectable()
 export class AiModelCatalogService implements OnModuleInit {
   constructor(private readonly prisma: PrismaService) {}
 
   async onModuleInit() {
-    await Promise.all(CHAT_MODELS.map((model, sortOrder) => this.prisma.aiModel.upsert({
+    await Promise.all(AI_MODELS.map((model, sortOrder) => this.prisma.aiModel.upsert({
       where: { id: model.id },
       update: {
         label: model.label,
         provider: model.provider,
         protocol: model.protocol,
+        capability: model.capability,
         apiKeyEnv: model.apiKeyEnv,
         sortOrder,
       },
@@ -23,13 +24,13 @@ export class AiModelCatalogService implements OnModuleInit {
 
   listEnabled() {
     return this.prisma.aiModel.findMany({
-      where: { enabled: true },
+      where: { enabled: true, capability: 'chat' },
       orderBy: { sortOrder: 'asc' },
       select: { id: true, label: true, protocol: true },
     });
   }
 
   findEnabled(modelId: string) {
-    return this.prisma.aiModel.findFirst({ where: { id: modelId, enabled: true } });
+    return this.prisma.aiModel.findFirst({ where: { id: modelId, enabled: true, capability: 'chat' } });
   }
 }

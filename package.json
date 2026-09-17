@@ -11,6 +11,7 @@
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
     "typecheck": "tsc --noEmit",
+    "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",

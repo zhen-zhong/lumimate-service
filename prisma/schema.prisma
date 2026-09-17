@@ -67,6 +67,7 @@ model AiModel {
   label     String
   provider  String
   protocol  String
+  capability String  @default("chat")
   apiKeyEnv String?
   enabled   Boolean  @default(true)
   sortOrder Int      @default(0)

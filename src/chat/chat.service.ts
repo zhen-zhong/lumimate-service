@@ -49,7 +49,9 @@ export class ChatService {
       isSupportedImageUrl(attachment.url, attachment.mimeType),
     ) ?? [];
 
-    const conversation = await this.ensureConversation(input.conversationId);
+    const conversation = await this.ensureChatConversation(
+      await this.ensureConversation(input.conversationId),
+    );
     const model = await this.models.findEnabled(conversation.modelId);
     if (!model) {
       yield { type: 'error', data: { code: 'MODEL_DISABLED', message: '当前聊天模型已停用，请在高级设置中重新选择' } };
@@ -173,7 +175,7 @@ export class ChatService {
   }
 
   async getSettings(conversationId: string) {
-    const conversation = await this.ensureConversation(conversationId);
+    const conversation = await this.ensureChatConversation(await this.ensureConversation(conversationId));
     return this.serializeSettings(conversation);
   }
 
@@ -240,6 +242,14 @@ export class ChatService {
       contextMessageLimit: conversation.contextMessageLimit,
       maxContextMessageLimit: HARD_MAX_CONTEXT_MESSAGE_LIMIT,
     };
+  }
+
+  private async ensureChatConversation<T extends { id: string; modelId: string }>(conversation: T) {
+    if (await this.models.findEnabled(conversation.modelId)) return conversation;
+    return this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: { modelId: DEFAULT_CHAT_MODEL_ID },
+    });
   }
 
   private attachmentsFromMetadata(metadata: Prisma.JsonValue | null) {

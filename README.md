@@ -71,8 +71,9 @@ HALOMOBI_GPT_6_ASTRA_API_KEY=key-for-gpt-6-astra
 模型协议固定由服务端白名单决定：
 
 - `deepseek-flash`（DeepSeek-V4.1-Flash）、`deepseek-v4-pro`（DeepSeek-V4.1-Pro）：DeepSeek，OpenAI Chat Completions，共用 `DEEPSEEK_API_KEY`。
-- `gpt-image-2`、`gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-6-astra`：HaloMobi，OpenAI Chat Completions。
+- `gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-6-astra`：HaloMobi，OpenAI Chat Completions。
 - `claude-opus-4-7`、`claude-opus-4-8`：HaloMobi，Anthropic Messages。
+- `gpt-image-2`：HaloMobi 图片生成模型，仅供后续图片生成接口使用；不出现在聊天模型列表，也不会走 Chat Completions。
 
 不在白名单中的模型 ID 会被设置接口拒绝。未配置某个 Provider 的 Key 时，仅该 Provider 的聊天请求返回 SSE `error`，不会影响已配置模型。
 
