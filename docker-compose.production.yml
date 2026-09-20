@@ -1,0 +1,63 @@
+name: lumimate
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lumimate
+      POSTGRES_USER: lumimate
+      POSTGRES_PASSWORD: ${LUMIMATE_DB_PASSWORD:?Set LUMIMATE_DB_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U lumimate -d lumimate']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    container_name: lumimate-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://lumimate:${LUMIMATE_DB_PASSWORD}@postgres:5432/lumimate?schema=public
+      REDIS_URL: redis://redis:6379
+      CORS_ORIGIN: https://liyang.live,http://localhost:8081
+      TEAMOROUTER_PROXY_URL: http://proxy-mihomo:7890
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - default
+      - gateway
+      - proxy
+
+volumes:
+  postgres-data:
+  redis-data:
+
+networks:
+  gateway:
+    external: true
+    name: aerolog_internal
+  proxy:
+    external: true
+    name: proxy_default
