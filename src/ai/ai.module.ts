@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import { AI_CHAT_ROUTER } from './interfaces/ai-chat-provider';
 import { AiModelCatalogService } from './ai-model-catalog.service';
 import { AiModelController } from './ai-model.controller';
+import { ImageGenerationController } from './image-generation.controller';
+import { ImageGenerationService } from './image-generation.service';
 import { CHAT_MODELS } from './model-catalog';
 import { AnthropicMessagesChatProvider } from './providers/anthropic-messages-chat.provider';
 import { ModelRouterChatProvider } from './providers/model-router-chat.provider';
@@ -14,9 +16,10 @@ function configuredValue(config: ConfigService, key: string, fallback?: string) 
 }
 
 @Module({
-  controllers: [AiModelController],
+  controllers: [AiModelController, ImageGenerationController],
   providers: [
     AiModelCatalogService,
+    ImageGenerationService,
     {
       provide: AI_CHAT_ROUTER,
       inject: [ConfigService],
@@ -53,6 +56,6 @@ function configuredValue(config: ConfigService, key: string, fallback?: string) 
       },
     },
   ],
-  exports: [AI_CHAT_ROUTER, AiModelCatalogService],
+  exports: [AI_CHAT_ROUTER, AiModelCatalogService, ImageGenerationService],
 })
 export class AiModule {}

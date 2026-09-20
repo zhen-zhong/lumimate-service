@@ -52,7 +52,7 @@ npm run start:dev
 
 模型由每个智能体的“高级设置 → 聊天模型”保存到会话。客户端只发送模型 ID；所有密钥只保留在服务端 `.env`。
 
-可用模型接口：`GET /v1/ai/models`。接口只返回 `AiModel.enabled=true` 的模型；角色设置页通过此接口加载候选项。停用模型时在数据库中将对应行的 `enabled` 改为 `false`，该模型会从客户端隐藏，且不能保存或继续发起聊天。
+可用模型接口：`GET /v1/ai/models?capability=chat` 或 `GET /v1/ai/models?capability=image-generation`。接口只返回 `AiModel.enabled=true` 的模型；角色设置页通过聊天能力接口加载候选项。停用模型时在数据库中将对应行的 `enabled` 改为 `false`，该模型会从对应客户端列表隐藏。
 
 ```dotenv
 DEEPSEEK_API_KEY=sk-your-key
@@ -66,6 +66,8 @@ HALOMOBI_CLAUDE_OPUS_4_8_API_KEY=key-for-claude-opus-4-8
 HALOMOBI_GPT_5_6_LUNA_API_KEY=key-for-gpt-5.6-luna
 HALOMOBI_GPT_5_6_SOL_API_KEY=key-for-gpt-5.6-sol
 HALOMOBI_GPT_6_ASTRA_API_KEY=key-for-gpt-6-astra
+TEAMOROUTER_BASE_URL=https://api.teamorouter.com
+TEAMOROUTER_API_KEY=key-for-teamorouter-image-models
 ```
 
 模型协议固定由服务端白名单决定：
@@ -73,7 +75,8 @@ HALOMOBI_GPT_6_ASTRA_API_KEY=key-for-gpt-6-astra
 - `deepseek-flash`（DeepSeek-V4.1-Flash）、`deepseek-v4-pro`（DeepSeek-V4.1-Pro）：DeepSeek，OpenAI Chat Completions，共用 `DEEPSEEK_API_KEY`。
 - `gpt-5.6-luna`、`gpt-5.6-sol`、`gpt-6-astra`：HaloMobi，OpenAI Chat Completions。
 - `claude-opus-4-7`、`claude-opus-4-8`：HaloMobi，Anthropic Messages。
-- `gpt-image-2`：HaloMobi 图片生成模型，仅供后续图片生成接口使用；不出现在聊天模型列表，也不会走 Chat Completions。
+- `gpt-image-2.5-flare`、`gpt-image-2.5-sunburst`、`gpt-image-2`：TeamoRouter OpenAI Images API，走 `POST /v1/images/generations`。
+- `gemini-3.1-flash-image`：TeamoRouter Gemini 原生 API，走 `POST /v1beta/models/{model}:generateContent`。
 
 不在白名单中的模型 ID 会被设置接口拒绝。未配置某个 Provider 的 Key 时，仅该 Provider 的聊天请求返回 SSE `error`，不会影响已配置模型。
 
@@ -86,6 +89,30 @@ curl -N -X POST http://localhost:3000/v1/chats/local/messages \
 ```
 
 新增模型时，在 `src/ai/model-catalog.ts` 登记模型 ID、协议、Provider；协议实现仍隔离在 `src/ai/providers/`，不泄漏到 `chat/`、`agent/` 模块。
+
+### 图片生成
+
+`POST /v1/ai/images/generations` 根据模型协议自动路由，并统一返回 Base64 data URL。图片生成不走聊天接口，也不使用聊天模型 Key。
+
+`POST /v1/ai/images/edits` 编辑图片，输入原图使用 JPEG、PNG 或 WebP Base64 data URL。GPT Image 自动转 multipart：支持 `mask`、`background`、`inputFidelity`、`outputCompression` 等参数；Gemini 自动转为 `inlineData`，使用 `aspectRatio`、`imageSize` 控制输出。
+
+```bash
+curl -X POST http://localhost:3000/v1/ai/images/generations \
+  -H 'Content-Type: application/json' \
+  -d '{"modelId":"gpt-image-2.5-flare","prompt":"一只在键盘上打字的橘猫，插画风格","size":"1024x1024","quality":"high"}'
+```
+
+Gemini 可使用 `aspectRatio`（如 `16:9`）和 `imageSize`（`1K`、`2K`、`4K`）。生图请求最长等待 300 秒；API Key 只应配置在服务端 `TEAMOROUTER_API_KEY`。
+
+如服务器无法直连 TeamoRouter，可设置 `TEAMOROUTER_PROXY_URL`，例如 macOS 本机代理为 `http://127.0.0.1:7897`。图片请求会单独走该代理，聊天和数据库连接不受影响。
+
+### 聊天图片 Tool Agent
+
+聊天接口内置 `image.generate` 与 `image.edit` 两个 Agent 工具。用户发送“生成一张夜晚北京胡同的电影海报”等明确生图请求时，服务端会跳过聊天模型并调用 `image.generate`；用户发送图片后说“把背景改成日落海滩”，或说“把上一张图改成日落海滩”时，服务端会调用 `image.edit`。默认使用 `gpt-image-2.5-flare`。
+
+每个会话设置独立保存 `modelId`（聊天模型）与 `imageModelId`（图片创作模型）。客户端在“陪伴设定 → 图片创作”选择图片模型；保存后，下一次生图或编辑图片立即使用新模型。
+
+工具结果以 `image.generated` SSE 事件返回，并作为助手消息附件持久化；客户端刷新后仍能显示，且可继续作为“上一张图”的编辑来源。普通对话不会调用图片工具。
 
 ## 本地依赖端口
 

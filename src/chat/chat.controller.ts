@@ -14,6 +14,8 @@ const settingsResponse = {
       agentName: { type: 'string', example: 'LumiMate' },
       agentProfile: { type: 'string' },
       responseStyle: { type: 'string', example: '温和、简洁' },
+      modelId: { type: 'string', example: 'deepseek-flash' },
+      imageModelId: { type: 'string', example: 'gpt-image-2.5-flare' },
       contextMessageLimit: { type: 'integer', example: 100 },
       maxContextMessageLimit: { type: 'integer', example: 1000 },
     },
@@ -51,12 +53,17 @@ export class ChatController {
       })
       .hijack();
     reply.raw.writeHead(200, reply.getHeaders() as never);
+    // 原生客户端在生图等长耗时 Tool 期间需要持续收到数据，否则底层 fetch 会超时。
+    const heartbeat = setInterval(() => {
+      reply.raw.write(': keep-alive\n\n');
+    }, 10_000);
 
     try {
       for await (const event of this.chatService.stream({ conversationId, ...body })) {
         reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
       }
     } finally {
+      clearInterval(heartbeat);
       reply.raw.end();
     }
   }

@@ -26,6 +26,12 @@ export class UpdateChatSettingsDto {
   @MaxLength(128)
   modelId?: string;
 
+  @ApiPropertyOptional({ description: '图片创作模型 ID；必须为启用的图片生成模型' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  imageModelId?: string;
+
   @ApiPropertyOptional({ description: '携带的历史消息条数', minimum: 1, maximum: 1_000, example: 100 })
   @IsOptional()
   @IsInt()

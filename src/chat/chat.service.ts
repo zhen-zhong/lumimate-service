@@ -3,14 +3,16 @@ import { ConfigService } from '@nestjs/config';
 import { MessageRole, MessageStatus, Prisma } from '@prisma/client';
 
 import { AgentRunner } from '../agent/agent-runner.service';
+import { ImageToolAgent } from '../agent/image-tool-agent.service';
 import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
-import { DEFAULT_CHAT_MODEL_ID } from '../ai/model-catalog';
+import { DEFAULT_CHAT_MODEL_ID, DEFAULT_IMAGE_MODEL_ID } from '../ai/model-catalog';
 import { PrismaService } from '../database/prisma.service';
 import type { CreateMessageDto } from './dto/create-message.dto';
 import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
+import type { ChatImageAttachment } from './chat.types';
 
 export type ChatEvent = {
-  type: 'message.created' | 'message.delta' | 'message.completed' | 'error';
+  type: 'message.created' | 'message.delta' | 'image.generated' | 'message.completed' | 'error';
   data: Record<string, unknown>;
 };
 
@@ -37,6 +39,7 @@ export class ChatService {
 
   constructor(
     private readonly agentRunner: AgentRunner,
+    private readonly imageToolAgent: ImageToolAgent,
     private readonly models: AiModelCatalogService,
     private readonly prisma: PrismaService,
     config: ConfigService,
@@ -49,7 +52,7 @@ export class ChatService {
       isSupportedImageUrl(attachment.url, attachment.mimeType),
     ) ?? [];
 
-    const conversation = await this.ensureChatConversation(
+    const conversation = await this.ensureConversationModels(
       await this.ensureConversation(input.conversationId),
     );
     const model = await this.models.findEnabled(conversation.modelId);
@@ -63,6 +66,10 @@ export class ChatService {
       provider: model.provider,
       protocol: model.protocol,
     };
+    const imageIntent = this.imageToolAgent.detect(input.content, images.length > 0);
+    const imageSource = imageIntent?.action === 'edit'
+      ? images[0] ?? await this.latestImageAttachment(input.conversationId)
+      : undefined;
     const history = await this.prisma.message.findMany({
       where: {
         conversationId: input.conversationId,
@@ -101,6 +108,57 @@ export class ChatService {
       type: 'message.created',
       data: { conversationId: input.conversationId, messageId, role: 'assistant', model: modelData },
     };
+
+    if (imageIntent) {
+      yield { type: 'message.delta', data: { messageId, delta: '正在生成图片…' } };
+      try {
+        const result = await this.imageToolAgent.run(imageIntent, conversation.imageModelId, imageSource, {
+          agentName: conversation.agentName,
+          agentProfile: conversation.agentProfile,
+          messages: history
+            .filter((message) => message.content.trim())
+            .map((message) => ({
+              role: message.role === MessageRole.USER ? 'user' as const : 'assistant' as const,
+              content: message.content,
+            })),
+        });
+        const imageModel = await this.models.findEnabled(result.modelId, 'image-generation');
+        if (!imageModel) throw new Error('所选生图模型不存在或已停用');
+        const imageModelData = {
+          modelId: imageModel.id,
+          modelLabel: imageModel.label,
+          provider: imageModel.provider,
+          protocol: imageModel.protocol,
+        };
+        const attachments = result.images.map((image) => ({ url: image.dataUrl, mimeType: image.mimeType }));
+        const content = imageIntent.action === 'edit' ? '已完成图片编辑。' : '已为你生成图片。';
+        await this.prisma.message.update({
+          where: { id: messageId },
+          data: {
+            status: MessageStatus.COMPLETED,
+            content,
+            metadata: { attachments } as Prisma.InputJsonValue,
+            ...imageModelData,
+          },
+        });
+        yield {
+          type: 'image.generated',
+          data: { messageId, images: attachments, action: imageIntent.action, model: imageModelData },
+        };
+        yield {
+          type: 'message.completed',
+          data: { messageId, content, model: imageModelData, usage: {} },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : '图片工具暂时不可用';
+        await this.prisma.message.update({
+          where: { id: messageId },
+          data: { status: MessageStatus.FAILED, content: message },
+        });
+        yield { type: 'error', data: { messageId, code: 'IMAGE_TOOL_FAILED', message } };
+      }
+      return;
+    }
 
     let content = '';
     let inputTokens: number | undefined;
@@ -170,12 +228,13 @@ export class ChatService {
         userId: LOCAL_USER_ID,
         contextMessageLimit: this.contextMessageLimit,
         modelId: DEFAULT_CHAT_MODEL_ID,
+        imageModelId: DEFAULT_IMAGE_MODEL_ID,
       },
     });
   }
 
   async getSettings(conversationId: string) {
-    const conversation = await this.ensureChatConversation(await this.ensureConversation(conversationId));
+    const conversation = await this.ensureConversationModels(await this.ensureConversation(conversationId));
     return this.serializeSettings(conversation);
   }
 
@@ -220,6 +279,9 @@ export class ChatService {
     if (settings.modelId && !await this.models.findEnabled(settings.modelId)) {
       throw new BadRequestException('所选模型不存在或已停用');
     }
+    if (settings.imageModelId && !await this.models.findEnabled(settings.imageModelId, 'image-generation')) {
+      throw new BadRequestException('所选图片创作模型不存在或已停用');
+    }
     const conversation = await this.prisma.conversation.update({
       where: { id: conversationId },
       data: settings,
@@ -232,6 +294,7 @@ export class ChatService {
     agentProfile: string;
     responseStyle: string;
     modelId: string;
+    imageModelId: string;
     contextMessageLimit: number;
   }) {
     return {
@@ -239,6 +302,7 @@ export class ChatService {
       agentProfile: conversation.agentProfile,
       responseStyle: conversation.responseStyle,
       modelId: conversation.modelId,
+      imageModelId: conversation.imageModelId,
       contextMessageLimit: conversation.contextMessageLimit,
       maxContextMessageLimit: HARD_MAX_CONTEXT_MESSAGE_LIMIT,
     };
@@ -252,6 +316,15 @@ export class ChatService {
     });
   }
 
+  private async ensureConversationModels<T extends { id: string; modelId: string; imageModelId: string }>(conversation: T) {
+    const withChatModel = await this.ensureChatConversation(conversation);
+    if (await this.models.findEnabled(withChatModel.imageModelId, 'image-generation')) return withChatModel;
+    return this.prisma.conversation.update({
+      where: { id: withChatModel.id },
+      data: { imageModelId: DEFAULT_IMAGE_MODEL_ID },
+    });
+  }
+
   private attachmentsFromMetadata(metadata: Prisma.JsonValue | null) {
     if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return [];
     const attachments = metadata.attachments;
@@ -260,5 +333,19 @@ export class ChatService {
       attachment !== null && typeof attachment === 'object' && !Array.isArray(attachment) &&
       isSupportedImageUrl(attachment.url, attachment.mimeType),
     );
+  }
+
+  private async latestImageAttachment(conversationId: string): Promise<ChatImageAttachment | undefined> {
+    const messages = await this.prisma.message.findMany({
+      where: { conversationId, status: MessageStatus.COMPLETED },
+      orderBy: { createdAt: 'desc' },
+      take: 24,
+      select: { metadata: true },
+    });
+    for (const message of messages) {
+      const attachment = this.attachmentsFromMetadata(message.metadata)[0];
+      if (attachment) return attachment;
+    }
+    return undefined;
   }
 }

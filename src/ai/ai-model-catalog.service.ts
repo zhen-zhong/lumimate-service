@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 
 import { PrismaService } from '../database/prisma.service';
-import { AI_MODELS } from './model-catalog';
+import { AI_MODELS, type AiModelCapability } from './model-catalog';
 
 @Injectable()
 export class AiModelCatalogService implements OnModuleInit {
@@ -22,15 +22,15 @@ export class AiModelCatalogService implements OnModuleInit {
     })));
   }
 
-  listEnabled() {
+  listEnabled(capability: AiModelCapability = 'chat') {
     return this.prisma.aiModel.findMany({
-      where: { enabled: true, capability: 'chat' },
+      where: { enabled: true, capability },
       orderBy: { sortOrder: 'asc' },
       select: { id: true, label: true, protocol: true },
     });
   }
 
-  findEnabled(modelId: string) {
-    return this.prisma.aiModel.findFirst({ where: { id: modelId, enabled: true, capability: 'chat' } });
+  findEnabled(modelId: string, capability: AiModelCapability = 'chat') {
+    return this.prisma.aiModel.findFirst({ where: { id: modelId, enabled: true, capability } });
   }
 }

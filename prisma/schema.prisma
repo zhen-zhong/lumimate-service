@@ -53,6 +53,7 @@ model Conversation {
   agentProfile        String    @default("") @db.Text
   responseStyle       String    @default("温和、简洁")
   modelId             String    @default("deepseek-flash")
+  imageModelId        String    @default("gpt-image-2.5-flare")
   contextMessageLimit Int       @default(100)
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
