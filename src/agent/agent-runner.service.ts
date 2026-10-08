@@ -10,6 +10,7 @@ export type AgentRunInput = {
   agentProfile: string;
   responseStyle: string;
   modelId: string;
+  memoryContext?: string;
 };
 
 const SYSTEM_PROMPT = [
@@ -33,6 +34,7 @@ export class AgentRunner {
         `你是 ${input.agentName}，一位温和、可靠的长期陪伴助手。`,
         input.agentProfile ? `角色设定：${input.agentProfile}` : null,
         `回复风格：${input.responseStyle}。`,
+        input.memoryContext || null,
         '使用简洁中文回答；不确定的信息明确说明不确定。',
         SYSTEM_PROMPT,
       ]

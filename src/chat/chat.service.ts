@@ -7,12 +7,14 @@ import { ImageToolAgent } from '../agent/image-tool-agent.service';
 import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
 import { DEFAULT_CHAT_MODEL_ID, DEFAULT_IMAGE_MODEL_ID } from '../ai/model-catalog';
 import { PrismaService } from '../database/prisma.service';
+import { MemoryService } from '../memory/memory.service';
+import { TasksService } from '../tasks/tasks.service';
 import type { CreateMessageDto } from './dto/create-message.dto';
 import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 import type { ChatImageAttachment } from './chat.types';
 
 export type ChatEvent = {
-  type: 'message.created' | 'message.delta' | 'image.generated' | 'message.completed' | 'error';
+  type: 'message.created' | 'message.delta' | 'image.generated' | 'intent.proposed' | 'message.completed' | 'error';
   data: Record<string, unknown>;
 };
 
@@ -42,6 +44,8 @@ export class ChatService {
     private readonly imageToolAgent: ImageToolAgent,
     private readonly models: AiModelCatalogService,
     private readonly prisma: PrismaService,
+    private readonly memories: MemoryService,
+    private readonly tasks: TasksService,
     config: ConfigService,
   ) {
     this.contextMessageLimit = getContextMessageLimit(config.get<string>('CHAT_CONTEXT_MESSAGE_LIMIT'));
@@ -66,6 +70,11 @@ export class ChatService {
       provider: model.provider,
       protocol: model.protocol,
     };
+    const memoryContext = await this.memories.buildAgentContext({
+      userId: conversation.userId,
+      conversationId: conversation.id,
+      query: input.content,
+    });
     const imageIntent = this.imageToolAgent.detect(input.content, images.length > 0);
     const imageSource = imageIntent?.action === 'edit'
       ? images[0] ?? await this.latestImageAttachment(input.conversationId)
@@ -170,6 +179,7 @@ export class ChatService {
         agentProfile: conversation.agentProfile,
         responseStyle: conversation.responseStyle,
         modelId: conversation.modelId,
+        memoryContext,
         messages: [
           ...history.map((message) => ({
             role: message.role === MessageRole.USER ? 'user' as const : 'assistant' as const,
@@ -204,10 +214,32 @@ export class ChatService {
       where: { id: messageId },
       data: { status: MessageStatus.COMPLETED, content, inputTokens, outputTokens },
     });
+    // Memory extraction is best-effort. Chat must still complete when Redis worker
+    // is temporarily unavailable.
+    try {
+      await this.memories.markInteraction(conversation.userId, conversation.id);
+      await this.memories.enqueueExtraction({
+        userId: conversation.userId,
+        conversationId: conversation.id,
+        sourceMessageId: userMessage.id,
+        content: input.content,
+      });
+    } catch {
+      // Scheduled retry happens on following user messages; do not break this SSE response.
+    }
+    const proposedIntent = await this.tasks.proposeReminderFromMessage({
+      userId: conversation.userId,
+      conversationId: conversation.id,
+      sourceMessageId: userMessage.id,
+      content: input.content,
+    }).catch(() => null);
     await this.prisma.message.update({
       where: { id: userMessage.id },
       data: { inputTokens, outputTokens: 0 },
     });
+    if (proposedIntent) {
+      yield { type: 'intent.proposed', data: { intent: proposedIntent } };
+    }
     yield {
       type: 'message.completed',
       data: { messageId, content, model: modelData, usage: { inputTokens, outputTokens } },
@@ -236,6 +268,11 @@ export class ChatService {
   async getSettings(conversationId: string) {
     const conversation = await this.ensureConversationModels(await this.ensureConversation(conversationId));
     return this.serializeSettings(conversation);
+  }
+
+  async getConversationIdentity(conversationId: string) {
+    const conversation = await this.ensureConversationModels(await this.ensureConversation(conversationId));
+    return { id: conversation.id, userId: conversation.userId };
   }
 
   async listMessages(conversationId: string) {

@@ -1,10 +1,14 @@
-import { Body, Controller, Get, Param, Post, Put, Res } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, Put, Res } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
 
 import { ChatService } from './chat.service';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
+import { MemoryService } from '../memory/memory.service';
+import { UpdateMemoryDto } from '../memory/dto/update-memory.dto';
+import { UpdateProactivePolicyDto } from '../memory/dto/update-proactive-policy.dto';
+import { UpdateRelationshipDto } from '../memory/dto/update-relationship.dto';
 
 const settingsResponse = {
   description: '会话助手设置',
@@ -26,7 +30,7 @@ const settingsResponse = {
 @ApiParam({ name: 'conversationId', description: '会话 ID' })
 @Controller('/chats')
 export class ChatController {
-  constructor(private readonly chatService: ChatService) {}
+  constructor(private readonly chatService: ChatService, private readonly memories: MemoryService) {}
 
   @Post(':conversationId/messages')
   @ApiOperation({ summary: '发送消息并接收 SSE 回复' })
@@ -89,5 +93,62 @@ export class ChatController {
     @Body() body: UpdateChatSettingsDto,
   ) {
     return this.chatService.updateSettings(conversationId, body);
+  }
+
+  @Get(':conversationId/memories')
+  @ApiOperation({ summary: '获取会话记忆；候选记忆需确认后才会进入 AI 上下文' })
+  async listMemories(@Param('conversationId') conversationId: string) {
+    await this.chatService.getConversationIdentity(conversationId);
+    return this.memories.list(conversationId);
+  }
+
+  @Post(':conversationId/memories/:memoryId/confirm')
+  @ApiOperation({ summary: '确认候选记忆' })
+  confirmMemory(@Param('conversationId') conversationId: string, @Param('memoryId') memoryId: string) {
+    return this.memories.confirm(conversationId, memoryId);
+  }
+
+  @Put(':conversationId/memories/:memoryId')
+  @ApiOperation({ summary: '编辑并确认记忆' })
+  updateMemory(
+    @Param('conversationId') conversationId: string,
+    @Param('memoryId') memoryId: string,
+    @Body() body: UpdateMemoryDto,
+  ) {
+    return this.memories.update(conversationId, memoryId, body);
+  }
+
+  @Delete(':conversationId/memories/:memoryId')
+  @ApiOperation({ summary: '删除记忆及其后续召回资格' })
+  removeMemory(@Param('conversationId') conversationId: string, @Param('memoryId') memoryId: string) {
+    return this.memories.remove(conversationId, memoryId);
+  }
+
+  @Get(':conversationId/relationship')
+  @ApiOperation({ summary: '获取会话关系资料' })
+  async getRelationship(@Param('conversationId') conversationId: string) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId);
+    return this.memories.getRelationship(conversation.userId, conversation.id);
+  }
+
+  @Put(':conversationId/relationship')
+  @ApiOperation({ summary: '更新会话关系资料' })
+  async updateRelationship(@Param('conversationId') conversationId: string, @Body() body: UpdateRelationshipDto) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId);
+    return this.memories.updateRelationship(conversation.userId, conversation.id, body);
+  }
+
+  @Get(':conversationId/proactive-policy')
+  @ApiOperation({ summary: '获取主动陪伴策略' })
+  async getProactivePolicy(@Param('conversationId') conversationId: string) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId);
+    return this.memories.getProactivePolicy(conversation.userId);
+  }
+
+  @Put(':conversationId/proactive-policy')
+  @ApiOperation({ summary: '更新主动陪伴策略' })
+  async updateProactivePolicy(@Param('conversationId') conversationId: string, @Body() body: UpdateProactivePolicyDto) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId);
+    return this.memories.updateProactivePolicy(conversation.userId, body);
   }
 }

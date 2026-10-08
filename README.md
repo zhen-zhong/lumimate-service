@@ -8,10 +8,14 @@ LumiMate 后端服务。负责聊天 SSE、后续 AI/Agent 编排、文件与知
 - 本地 PostgreSQL、Redis 与 Prisma migration。
 - Redis/BullMQ 队列连接基础。
 - 健康检查：`GET /v1/health`。
-- SSE 聊天演示：`POST /v1/chats/:conversationId/messages`。
-- 数据模型基础：用户、会话、消息、定时任务、知识库文档与分块。
+- SSE 聊天、消息持久化、上下文窗口、可切换聊天/生图模型。
+- 图片理解、聊天内图片生成和编辑。
+- P0 陪伴记忆：候选提取、人工确认、编辑、删除、按相关性召回。
+- P0 关系资料：称呼、关系摘要、沟通偏好。
+- P0 意图任务：显式创建、确认、取消、BullMQ 到时执行；主动陪伴默认关闭，受静默时间、频率、每日上限约束。
+- 数据模型：用户、会话、消息、模型目录、记忆、关系资料、意图任务、知识库文档与分块。
 
-当前 SSE 仅返回演示文本；尚未接入模型、鉴权、消息持久化、上传、知识库检索或真实任务执行。完整计划见 [TODO.md](./TODO.md)。
+当前未实现：账户鉴权、多用户隔离、语义向量召回、LLM 结构化记忆抽取、推送通知、知识库检索、硬件控制。完整路线见 [TODO.md](./TODO.md)。
 
 ## 技术栈
 
@@ -47,6 +51,38 @@ npm run start:dev
 ## API 文档
 
 启动服务后访问 Swagger UI：`http://localhost:3000/docs`；OpenAPI JSON：`http://localhost:3000/docs-json`。接口路径统一以 `/v1` 开头。当前文档包含健康检查、会话设置与流式聊天接口；聊天消息的响应是 `text/event-stream`，建议使用 `curl -N` 或支持 SSE 的客户端查看完整事件流。
+
+### 陪伴记忆与任务 API
+
+所有接口按会话隔离；当前 MVP 固定使用本地用户 `local-user`，接入鉴权前不能作为多用户生产接口。
+
+```text
+GET    /v1/chats/:conversationId/memories
+POST   /v1/chats/:conversationId/memories/:memoryId/confirm
+PUT    /v1/chats/:conversationId/memories/:memoryId
+DELETE /v1/chats/:conversationId/memories/:memoryId
+
+GET    /v1/chats/:conversationId/relationship
+PUT    /v1/chats/:conversationId/relationship
+GET    /v1/chats/:conversationId/proactive-policy
+PUT    /v1/chats/:conversationId/proactive-policy
+
+GET    /v1/chats/:conversationId/intents
+POST   /v1/chats/:conversationId/intents
+POST   /v1/chats/:conversationId/intents/:intentId/confirm
+DELETE /v1/chats/:conversationId/intents/:intentId
+```
+
+创建任务不会立即执行，先返回 `AWAITING_CONFIRMATION`；必须调用 `confirm` 后才会入队。主动陪伴策略默认 `enabled=false`。任务到时目前写入一条助手消息；推送通道尚未接入。
+
+聊天里可先试：`明天 9 点提醒我开会`、`2026-10-10 18:30 提醒我取快递`。服务会发出 SSE `intent.proposed`，客户端展示确认框；取消会删除候选任务。当前仅解析带明确日期和时间的提醒，不会猜测时间。
+
+首次拉取此版本后，先应用迁移：
+
+```bash
+npm run db:generate
+npx prisma migrate deploy
+```
 
 ## AI Provider 配置
 
@@ -200,9 +236,10 @@ lumimate-service/
 │   │   ├── chat.controller.ts           # 会话设置和 SSE 接口
 │   │   ├── chat.service.ts              # 消息持久化与流式聊天
 │   │   └── dto/                         # 请求参数及校验
+│   ├── memory/                           # 记忆候选、关系资料、主动陪伴策略与提取队列
 │   ├── database/                        # Prisma 连接生命周期
 │   ├── health/                          # PostgreSQL、Redis 健康检查
-│   └── tasks/                           # BullMQ 队列注册
+│   └── tasks/                           # 意图任务 API、BullMQ 排程与执行器
 ├── .env.example                         # 环境变量模板
 ├── docker-compose.yml                   # 本地 PostgreSQL、Redis
 ├── package.json
