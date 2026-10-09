@@ -87,12 +87,19 @@ export class MemoryService {
     }
   }
 
-  async buildAgentContext(input: { userId: string; conversationId: string; query: string }) {
+  async buildAgentContext(input: {
+    userId: string;
+    conversationId: string;
+    query: string;
+    excludedCategories?: string[];
+  }) {
     const now = new Date();
+    const excludedCategories = input.excludedCategories ?? [];
     const memories = await this.prisma.memory.findMany({
       where: {
         userId: input.userId,
         status: MemoryStatus.CONFIRMED,
+        ...(excludedCategories.length ? { category: { notIn: excludedCategories as MemoryCategory[] } } : {}),
         OR: [{ conversationId: input.conversationId }, { conversationId: null }],
         AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] }],
       },
@@ -106,11 +113,13 @@ export class MemoryService {
       .sort((left, right) => right.score - left.score || right.memory.updatedAt.getTime() - left.memory.updatedAt.getTime())
       .slice(0, MAX_RECALLED_MEMORIES)
       .map(({ memory }) => `- ${memory.category}: ${memory.content}`);
-    const relationship = await this.ensureRelationship(input.userId, input.conversationId);
+    const relationship = excludedCategories.includes(MemoryCategory.RELATIONSHIP)
+      ? null
+      : await this.ensureRelationship(input.userId, input.conversationId);
     const relationshipLines = [
-      relationship.preferredName ? `用户希望被称呼为：${relationship.preferredName}` : null,
-      relationship.relationshipSummary ? `关系状态：${relationship.relationshipSummary}` : null,
-      relationship.communicationStyle ? `沟通偏好：${relationship.communicationStyle}` : null,
+      relationship?.preferredName ? `用户希望被称呼为：${relationship.preferredName}` : null,
+      relationship?.relationshipSummary ? `关系状态：${relationship.relationshipSummary}` : null,
+      relationship?.communicationStyle ? `沟通偏好：${relationship.communicationStyle}` : null,
     ].filter(Boolean);
     return [
       relationshipLines.length ? `关系资料（仅作自然沟通参考）：\n${relationshipLines.join('\n')}` : null,

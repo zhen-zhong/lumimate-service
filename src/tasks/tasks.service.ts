@@ -5,6 +5,7 @@ import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 
 import { PrismaService } from '../database/prisma.service';
+import { PushService } from '../push/push.service';
 import type { CreateIntentDto } from './dto/create-intent.dto';
 import { AGENT_INTENT_QUEUE, type ExecuteIntentJob } from './tasks.types';
 
@@ -97,10 +98,13 @@ function parseReminder(content: string, timezone: string) {
   return title ? { title: title.slice(0, 500), dueAt } : null;
 }
 
+export type ReminderCandidate = NonNullable<ReturnType<typeof parseReminder>>;
+
 @Injectable()
 export class TasksService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly push: PushService,
     @InjectQueue(AGENT_INTENT_QUEUE) private readonly queue: Queue<ExecuteIntentJob>,
   ) {}
 
@@ -136,32 +140,30 @@ export class TasksService implements OnModuleInit {
     });
   }
 
-  async proposeReminderFromMessage(input: {
-    conversationId: string;
-    userId: string;
-    sourceMessageId: string;
-    content: string;
-    timezone?: string;
-  }) {
-    const timezone = input.timezone ?? 'Asia/Shanghai';
-    const candidate = parseReminder(input.content, timezone);
-    if (!candidate) return null;
-    const existing = await this.prisma.agentIntent.findFirst({
-      where: { sourceMessageId: input.sourceMessageId, type: AgentIntentType.REMINDER },
-    });
-    if (existing) return existing;
-    return this.prisma.agentIntent.create({
+  getReminderCandidate(content: string, timezone = 'Asia/Shanghai') {
+    this.assertTimeZone(timezone);
+    return parseReminder(content, timezone);
+  }
+
+  async createScheduled(conversationId: string, userId: string, input: CreateIntentDto) {
+    if (input.dueAt.getTime() <= Date.now()) throw new BadRequestException('任务时间必须晚于当前时间');
+    this.assertTimeZone(input.timezone);
+    const scheduled = await this.prisma.agentIntent.create({
       data: {
-        conversationId: input.conversationId,
-        userId: input.userId,
-        type: AgentIntentType.REMINDER,
-        title: candidate.title,
-        dueAt: candidate.dueAt,
-        timezone,
-        sourceMessageId: input.sourceMessageId,
+        conversationId,
+        userId,
+        type: input.type,
+        title: input.title.trim(),
+        dueAt: input.dueAt,
+        timezone: input.timezone,
+        payload: input.payload as Prisma.InputJsonValue | undefined,
         idempotencyKey: randomUUID(),
+        status: AgentIntentStatus.SCHEDULED,
+        confirmedAt: new Date(),
       },
     });
+    await this.enqueue(scheduled.id, scheduled.dueAt);
+    return scheduled;
   }
 
   async confirm(conversationId: string, intentId: string) {
@@ -258,6 +260,11 @@ export class TasksService implements OnModuleInit {
           });
         }
       });
+      try {
+        await this.push.enqueueIntent(intent);
+      } catch {
+        // A push failure must not undo a completed reminder or assistant message.
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : '任务执行失败';
       await this.prisma.agentIntent.update({

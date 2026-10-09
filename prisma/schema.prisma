@@ -68,6 +68,45 @@ enum AgentIntentStatus {
   EXPIRED
 }
 
+enum AgentRunStatus {
+  AWAITING_CONFIRMATION
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum AgentToolPermission {
+  READ
+  WRITE
+  SENSITIVE
+}
+
+enum PushPlatform {
+  IOS
+  ANDROID
+}
+
+enum PushDeliveryStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum SkillPluginStatus {
+  ENABLED
+  DISABLED
+  ARCHIVED
+}
+
+enum SkillPluginVersionStatus {
+  DRAFT
+  PUBLISHED
+  RETIRED
+}
+
 model User {
   id          String         @id @default(cuid())
   createdAt   DateTime       @default(now())
@@ -75,10 +114,14 @@ model User {
   conversations Conversation[]
   tasks       ScheduledTask[]
   documents   KnowledgeDocument[]
+  knowledgeBases KnowledgeBase[]
   memories    Memory[]
   relationships Relationship[]
   intents     AgentIntent[]
   proactivePolicy ProactivePolicy?
+  agentRuns   AgentRun[]
+  pushDevices PushDevice[]
+  pushDeliveries PushDelivery[]
 }
 
 model Conversation {
@@ -98,6 +141,9 @@ model Conversation {
   memories            Memory[]
   relationship        Relationship?
   intents             AgentIntent[]
+  agentRuns           AgentRun[]
+  pushDeliveries      PushDelivery[]
+  skillPlugins        ConversationSkillPlugin[]
 
   @@index([userId, updatedAt])
 }
@@ -200,6 +246,7 @@ model AgentIntent {
   updatedAt      DateTime          @updatedAt
   user           User              @relation(fields: [userId], references: [id], onDelete: Cascade)
   conversation   Conversation?     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  pushDeliveries PushDelivery[]
 
   @@index([userId, status, dueAt])
   @@index([conversationId, status, dueAt])
@@ -219,6 +266,130 @@ model ProactivePolicy {
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
   user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AgentRun {
+  id             String              @id @default(cuid())
+  userId         String
+  conversationId String
+  toolName       String
+  permission     AgentToolPermission
+  status         AgentRunStatus      @default(AWAITING_CONFIRMATION)
+  input          Json
+  output         Json?
+  sourceMessageId String?
+  pluginVersionId String?
+  idempotencyKey String              @unique
+  confirmedAt    DateTime?
+  startedAt      DateTime?
+  completedAt    DateTime?
+  cancelledAt    DateTime?
+  error          String?             @db.Text
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  user           User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation   Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  pluginVersion  SkillPluginVersion? @relation(fields: [pluginVersionId], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, status, createdAt])
+  @@index([userId, toolName, status])
+  @@index([sourceMessageId])
+  @@index([pluginVersionId, createdAt])
+}
+
+model SkillPlugin {
+  id          String              @id
+  displayName String
+  description String              @db.Text
+  status      SkillPluginStatus   @default(ENABLED)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  versions    SkillPluginVersion[]
+  bindings    ConversationSkillPlugin[]
+
+  @@index([status, updatedAt])
+}
+
+model SkillPluginVersion {
+  id             String                   @id @default(cuid())
+  pluginId       String
+  version        String
+  manifest       Json
+  promptTemplate String                   @db.Text
+  safetyPolicy   String                   @db.Text
+  status         SkillPluginVersionStatus @default(DRAFT)
+  publishedAt    DateTime?
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+  plugin         SkillPlugin              @relation(fields: [pluginId], references: [id], onDelete: Cascade)
+  bindings       ConversationSkillPlugin[]
+  agentRuns      AgentRun[]
+
+  @@unique([pluginId, version])
+  @@index([pluginId, status, publishedAt])
+}
+
+model ConversationSkillPlugin {
+  id              String             @id @default(cuid())
+  conversationId  String
+  pluginId        String
+  pluginVersionId String
+  enabled         Boolean            @default(true)
+  priority        Int                @default(0)
+  userConfig      Json?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  conversation    Conversation       @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  plugin          SkillPlugin        @relation(fields: [pluginId], references: [id], onDelete: Restrict)
+  pluginVersion   SkillPluginVersion @relation(fields: [pluginVersionId], references: [id], onDelete: Restrict)
+
+  @@unique([conversationId, pluginId])
+  @@index([conversationId, enabled, priority])
+  @@index([pluginVersionId])
+}
+
+model PushDevice {
+  id            String       @id @default(cuid())
+  userId        String
+  expoPushToken String       @unique @db.Text
+  platform      PushPlatform
+  enabled       Boolean      @default(true)
+  lastSeenAt    DateTime     @default(now())
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deliveries    PushDelivery[]
+
+  @@index([userId, enabled, lastSeenAt])
+}
+
+model PushDelivery {
+  id             String             @id @default(cuid())
+  deviceId       String
+  userId         String
+  conversationId String
+  intentId       String?
+  type           AgentIntentType
+  title          String
+  body           String             @db.Text
+  status         PushDeliveryStatus @default(QUEUED)
+  expoTicketId   String?            @unique
+  attemptCount   Int                @default(0)
+  error          String?            @db.Text
+  sentAt         DateTime?
+  deliveredAt    DateTime?
+  failedAt       DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  device         PushDevice         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation   Conversation       @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  intent         AgentIntent?       @relation(fields: [intentId], references: [id], onDelete: SetNull)
+
+  @@index([deviceId, status, createdAt])
+  @@index([userId, status, createdAt])
+  @@index([intentId])
+  @@index([status, createdAt])
 }
 
 model ScheduledTask {
@@ -242,16 +413,37 @@ model ScheduledTask {
 model KnowledgeDocument {
   id          String                  @id @default(cuid())
   userId      String
+  knowledgeBaseId String?
   filename    String
   mimeType    String
   storageKey  String
   status      KnowledgeDocumentStatus @default(UPLOADING)
+  sizeBytes   Int                     @default(0)
+  processedAt DateTime?
+  failedAt    DateTime?
+  failureReason String?               @db.Text
   createdAt   DateTime                @default(now())
   updatedAt   DateTime                @updatedAt
   user        User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  knowledgeBase KnowledgeBase?        @relation(fields: [knowledgeBaseId], references: [id], onDelete: SetNull)
   chunks      KnowledgeChunk[]
 
   @@index([userId, status])
+  @@index([knowledgeBaseId, status])
+}
+
+model KnowledgeBase {
+  id          String              @id @default(cuid())
+  userId      String
+  name        String
+  description String?             @db.Text
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  documents   KnowledgeDocument[]
+
+  @@unique([userId, name])
+  @@index([userId, updatedAt])
 }
 
 model KnowledgeChunk {

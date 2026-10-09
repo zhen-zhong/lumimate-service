@@ -11,6 +11,7 @@ export type AgentRunInput = {
   responseStyle: string;
   modelId: string;
   memoryContext?: string;
+  skillInstructions?: string[];
 };
 
 const SYSTEM_PROMPT = [
@@ -35,6 +36,7 @@ export class AgentRunner {
         input.agentProfile ? `角色设定：${input.agentProfile}` : null,
         `回复风格：${input.responseStyle}。`,
         input.memoryContext || null,
+        input.skillInstructions?.length ? ['已启用技能规则：', ...input.skillInstructions].join('\n') : null,
         '使用简洁中文回答；不确定的信息明确说明不确定。',
         SYSTEM_PROMPT,
       ]

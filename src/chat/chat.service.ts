@@ -3,18 +3,19 @@ import { ConfigService } from '@nestjs/config';
 import { MessageRole, MessageStatus, Prisma } from '@prisma/client';
 
 import { AgentRunner } from '../agent/agent-runner.service';
+import { AgentToolService } from '../agent/agent-tool.service';
 import { ImageToolAgent } from '../agent/image-tool-agent.service';
 import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
 import { DEFAULT_CHAT_MODEL_ID, DEFAULT_IMAGE_MODEL_ID } from '../ai/model-catalog';
 import { PrismaService } from '../database/prisma.service';
 import { MemoryService } from '../memory/memory.service';
-import { TasksService } from '../tasks/tasks.service';
+import { SkillPolicyResolverService } from '../skills/skill-policy-resolver.service';
 import type { CreateMessageDto } from './dto/create-message.dto';
 import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 import type { ChatImageAttachment } from './chat.types';
 
 export type ChatEvent = {
-  type: 'message.created' | 'message.delta' | 'image.generated' | 'intent.proposed' | 'message.completed' | 'error';
+  type: 'message.created' | 'message.delta' | 'image.generated' | 'agent.run.proposed' | 'message.completed' | 'error';
   data: Record<string, unknown>;
 };
 
@@ -45,7 +46,8 @@ export class ChatService {
     private readonly models: AiModelCatalogService,
     private readonly prisma: PrismaService,
     private readonly memories: MemoryService,
-    private readonly tasks: TasksService,
+    private readonly tools: AgentToolService,
+    private readonly skillPolicies: SkillPolicyResolverService,
     config: ConfigService,
   ) {
     this.contextMessageLimit = getContextMessageLimit(config.get<string>('CHAT_CONTEXT_MESSAGE_LIMIT'));
@@ -70,11 +72,18 @@ export class ChatService {
       provider: model.provider,
       protocol: model.protocol,
     };
+    const skillPolicy = await this.skillPolicies.resolve(conversation.id);
     const memoryContext = await this.memories.buildAgentContext({
       userId: conversation.userId,
       conversationId: conversation.id,
       query: input.content,
+      excludedCategories: skillPolicy.blockedMemoryCategories,
     });
+    const skillMetadata = skillPolicy.plugins.map((plugin) => ({
+      id: plugin.pluginId,
+      version: plugin.version,
+      versionId: plugin.pluginVersionId,
+    }));
     const imageIntent = this.imageToolAgent.detect(input.content, images.length > 0);
     const imageSource = imageIntent?.action === 'edit'
       ? images[0] ?? await this.latestImageAttachment(input.conversationId)
@@ -96,8 +105,8 @@ export class ChatService {
         conversationId: input.conversationId,
         role: MessageRole.USER,
         content: input.content,
-        metadata: input.attachments
-          ? ({ attachments: input.attachments } as unknown as Prisma.InputJsonValue)
+        metadata: (input.attachments || skillMetadata.length)
+          ? ({ ...(input.attachments ? { attachments: input.attachments } : {}), skillPlugins: skillMetadata } as unknown as Prisma.InputJsonValue)
           : undefined,
         ...modelData,
       },
@@ -108,6 +117,7 @@ export class ChatService {
         role: MessageRole.ASSISTANT,
         status: MessageStatus.STREAMING,
         content: '',
+        metadata: skillMetadata.length ? ({ skillPlugins: skillMetadata } as unknown as Prisma.InputJsonValue) : undefined,
         ...modelData,
       },
     });
@@ -146,7 +156,7 @@ export class ChatService {
           data: {
             status: MessageStatus.COMPLETED,
             content,
-            metadata: { attachments } as Prisma.InputJsonValue,
+            metadata: { attachments, skillPlugins: skillMetadata } as Prisma.InputJsonValue,
             ...imageModelData,
           },
         });
@@ -180,6 +190,7 @@ export class ChatService {
         responseStyle: conversation.responseStyle,
         modelId: conversation.modelId,
         memoryContext,
+        skillInstructions: skillPolicy.instructions,
         messages: [
           ...history.map((message) => ({
             role: message.role === MessageRole.USER ? 'user' as const : 'assistant' as const,
@@ -227,18 +238,19 @@ export class ChatService {
     } catch {
       // Scheduled retry happens on following user messages; do not break this SSE response.
     }
-    const proposedIntent = await this.tasks.proposeReminderFromMessage({
+    const proposedRun = await this.tools.proposeReminder({
       userId: conversation.userId,
       conversationId: conversation.id,
       sourceMessageId: userMessage.id,
       content: input.content,
+      pluginVersionId: skillPolicy.toolOwners.get('task.create'),
     }).catch(() => null);
     await this.prisma.message.update({
       where: { id: userMessage.id },
       data: { inputTokens, outputTokens: 0 },
     });
-    if (proposedIntent) {
-      yield { type: 'intent.proposed', data: { intent: proposedIntent } };
+    if (proposedRun) {
+      yield { type: 'agent.run.proposed', data: { run: proposedRun } };
     }
     yield {
       type: 'message.completed',

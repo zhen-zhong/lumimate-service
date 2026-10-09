@@ -7,6 +7,8 @@ import { AgentModule } from './agent/agent.module';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { TasksModule } from './tasks/tasks.module';
+import { SkillPluginModule } from './skills/skill-plugin.module';
+import { KnowledgeModule } from './knowledge/knowledge.module';
 
 @Module({
   imports: [
@@ -20,6 +22,8 @@ import { TasksModule } from './tasks/tasks.module';
     DatabaseModule,
     AgentModule,
     HealthModule,
+    SkillPluginModule,
+    KnowledgeModule,
     ChatModule,
     TasksModule,
   ],
