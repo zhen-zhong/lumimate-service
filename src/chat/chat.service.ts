@@ -122,6 +122,18 @@ export class ChatService {
       },
     });
     const messageId = assistantMessage.id;
+    const reminderCandidate = imageIntent ? null : this.tools.getReminderCandidate(input.content);
+    const reminderRequested = !imageIntent && this.tools.hasReminderIntent(input.content);
+    const proposedRun = reminderCandidate
+      ? await this.tools.proposeReminder({
+        userId: conversation.userId,
+        conversationId: conversation.id,
+        sourceMessageId: userMessage.id,
+        content: input.content,
+        candidate: reminderCandidate,
+        pluginVersionId: skillPolicy.toolOwners.get('task.create'),
+      }).catch(() => null)
+      : null;
 
     yield {
       type: 'message.created',
@@ -191,6 +203,10 @@ export class ChatService {
         modelId: conversation.modelId,
         memoryContext,
         skillInstructions: skillPolicy.instructions,
+        reminder: proposedRun && reminderCandidate
+          ? { title: reminderCandidate.title, dueAt: reminderCandidate.dueAt.toISOString(), timezone: 'Asia/Shanghai' }
+          : undefined,
+        reminderRequested,
         messages: [
           ...history.map((message) => ({
             role: message.role === MessageRole.USER ? 'user' as const : 'assistant' as const,
@@ -217,6 +233,9 @@ export class ChatService {
         where: { id: messageId },
         data: { status: MessageStatus.FAILED, content: message, inputTokens, outputTokens },
       });
+      if (proposedRun) {
+        yield { type: 'agent.run.proposed', data: { run: proposedRun } };
+      }
       yield { type: 'error', data: { messageId, code: 'MODEL_STREAM_FAILED', message } };
       return;
     }
@@ -238,13 +257,6 @@ export class ChatService {
     } catch {
       // Scheduled retry happens on following user messages; do not break this SSE response.
     }
-    const proposedRun = await this.tools.proposeReminder({
-      userId: conversation.userId,
-      conversationId: conversation.id,
-      sourceMessageId: userMessage.id,
-      content: input.content,
-      pluginVersionId: skillPolicy.toolOwners.get('task.create'),
-    }).catch(() => null);
     await this.prisma.message.update({
       where: { id: userMessage.id },
       data: { inputTokens, outputTokens: 0 },

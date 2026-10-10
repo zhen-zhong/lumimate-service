@@ -3,7 +3,7 @@ import { AgentIntentType, AgentRunStatus, AgentToolPermission, Prisma } from '@p
 import { randomUUID } from 'node:crypto';
 
 import { PrismaService } from '../database/prisma.service';
-import { TasksService } from '../tasks/tasks.service';
+import { type ReminderCandidate, TasksService } from '../tasks/tasks.service';
 
 export const AGENT_TOOL_NAMES = {
   TASK_CREATE: 'task.create',
@@ -38,9 +38,10 @@ export class AgentToolService {
     content: string;
     timezone?: string;
     pluginVersionId?: string;
+    candidate?: ReminderCandidate | null;
   }) {
     const timezone = input.timezone ?? 'Asia/Shanghai';
-    const candidate = this.tasks.getReminderCandidate(input.content, timezone);
+    const candidate = input.candidate ?? this.tasks.getReminderCandidate(input.content, timezone);
     if (!candidate) return null;
     const existing = await this.prisma.agentRun.findFirst({
       where: {
@@ -76,6 +77,14 @@ export class AgentToolService {
       orderBy: { createdAt: 'desc' },
       take: 100,
     });
+  }
+
+  getReminderCandidate(content: string, timezone = 'Asia/Shanghai') {
+    return this.tasks.getReminderCandidate(content, timezone);
+  }
+
+  hasReminderIntent(content: string) {
+    return this.tasks.hasReminderIntent(content);
   }
 
   async confirm(conversationId: string, id: string) {

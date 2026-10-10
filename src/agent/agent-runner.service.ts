@@ -12,6 +12,8 @@ export type AgentRunInput = {
   modelId: string;
   memoryContext?: string;
   skillInstructions?: string[];
+  reminder?: { title: string; dueAt: string; timezone: string };
+  reminderRequested?: boolean;
 };
 
 const SYSTEM_PROMPT = [
@@ -38,6 +40,11 @@ export class AgentRunner {
         `回复风格：${input.responseStyle}。`,
         input.memoryContext || null,
         input.skillInstructions?.length ? ['已启用技能规则：', ...input.skillInstructions].join('\n') : null,
+        input.reminder
+          ? `服务已识别提醒“${input.reminder.title}”，触发时间 ${input.reminder.dueAt}（${input.reminder.timezone}）。回复中只需提示用户确认下方提醒卡；确认前不得称为已创建。`
+          : input.reminderRequested
+            ? '用户在请求提醒，但服务未识别到未来的明确时间。请直接提示格式：今天/明天/后天/N天后 HH:mm 提醒我做某事；未写日期时按今天处理。'
+            : null,
         '使用简洁中文回答；不确定的信息明确说明不确定。',
         SYSTEM_PROMPT,
       ]

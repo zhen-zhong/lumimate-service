@@ -10,6 +10,8 @@ import type { CreateIntentDto } from './dto/create-intent.dto';
 import { AGENT_INTENT_QUEUE, type ExecuteIntentJob } from './tasks.types';
 
 const MAX_SCHEDULE_DELAY = 2_147_483_647;
+const REMINDER_ACTION = /(?:提醒(?:我|一下)?|别忘了|记得|叫(?:醒)?我|通知我|推送(?:给我|我)?|(?:给我|帮我)?(?:设|设置|设定|创建|定)(?:个|一个|一条)?(?:提醒|闹钟))/u;
+const CLOCK_TIME = /(?:(上午|早上|清晨|中午|下午|傍晚|晚上|夜里|凌晨)\s*)?(\d{1,2})\s*(?:[:：]|点)\s*(\d{1,2})?/u;
 const TERMINAL_INTENT_STATUSES: AgentIntentStatus[] = [
   AgentIntentStatus.COMPLETED,
   AgentIntentStatus.CANCELLED,
@@ -71,33 +73,47 @@ function zonedDate(timezone: string, year: number, month: number, day: number, h
   return new Date(utc - minutes * 60_000);
 }
 
-function nextLocalDay(timezone: string) {
+function localDayAfter(timezone: string, days: number) {
   const today = localDateParts(timezone);
-  return localDateParts(timezone, zonedDate(timezone, today.year, today.month, today.day + 1, 12, 0));
+  return localDateParts(timezone, zonedDate(timezone, today.year, today.month, today.day + days, 12, 0));
 }
 
 function parseReminder(content: string, timezone: string) {
-  if (!/(?:提醒(?:我|一下)?|别忘了|记得)/u.test(content)) return null;
-  const explicit = /(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})日?[^\d]{0,12}(\d{1,2})(?::|点)(\d{1,2})?/u.exec(content);
-  const relative = /(?:明天|明日)[^\d]{0,12}(\d{1,2})(?::|点)(\d{1,2})?/u.exec(content);
-  const sameDay = /(?:今天|今日)[^\d]{0,12}(\d{1,2})(?::|点)(\d{1,2})?/u.exec(content);
-  const timeMatch = explicit ?? relative ?? sameDay;
+  if (!REMINDER_ACTION.test(content)) return null;
+  const explicitDate = /(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})日?/u.exec(content);
+  const relativeDate = /(?:今天|今日|明天|明日|后天|(\d{1,3})\s*天后)/u.exec(content);
+  const timeMatch = CLOCK_TIME.exec(content);
   if (!timeMatch) return null;
-  const hour = Number(timeMatch[4] ?? timeMatch[1]);
-  const minute = Number(timeMatch[5] ?? timeMatch[2] ?? 0);
+  const period = timeMatch[1];
+  let hour = Number(timeMatch[2]);
+  const minute = Number(timeMatch[3] ?? 0);
+  if (['下午', '傍晚', '晚上', '夜里'].includes(period) && hour < 12) hour += 12;
+  if (['凌晨', '早上', '清晨'].includes(period) && hour === 12) hour = 0;
   if (hour > 23 || minute > 59) return null;
-  const date = explicit
-    ? { year: Number(explicit[1]), month: Number(explicit[2]), day: Number(explicit[3]) }
-    : sameDay
-      ? localDateParts(timezone)
-      : nextLocalDay(timezone);
+  const relativeText = relativeDate?.[0] ?? '';
+  const relativeDays = relativeText === '明天' || relativeText === '明日'
+    ? 1
+    : relativeText === '后天'
+      ? 2
+      : relativeDate?.[1]
+        ? Number(relativeDate[1])
+        : 0;
+  const date = explicitDate
+    ? { year: Number(explicitDate[1]), month: Number(explicitDate[2]), day: Number(explicitDate[3]) }
+    : relativeDate
+      ? localDayAfter(timezone, relativeDays)
+      : localDateParts(timezone);
   const dueAt = zonedDate(timezone, date.year, date.month, date.day, hour, minute);
   if (dueAt.getTime() <= Date.now()) return null;
   const title = content
-    .replace(/(?:提醒(?:我|一下)?|别忘了|记得)/gu, '')
-    .replace(explicit?.[0] ?? relative?.[0] ?? sameDay?.[0] ?? '', '')
+    .replace(new RegExp(REMINDER_ACTION.source, 'gu'), '')
+    .replace(explicitDate?.[0] ?? '', '')
+    .replace(relativeText, '')
+    .replace(timeMatch[0], '')
+    .replace(/(?:请|帮我|给我|在|到|于|设置|设定|创建|定一个|定一条|一条|一个)/gu, ' ')
     .replace(/[，,。！!？?]/gu, ' ')
-    .trim();
+    .trim()
+    .replace(/^(?:消息|信息)\s*/u, '');
   return title ? { title: title.slice(0, 500), dueAt } : null;
 }
 
@@ -146,6 +162,10 @@ export class TasksService implements OnModuleInit {
   getReminderCandidate(content: string, timezone = 'Asia/Shanghai') {
     this.assertTimeZone(timezone);
     return parseReminder(content, timezone);
+  }
+
+  hasReminderIntent(content: string) {
+    return REMINDER_ACTION.test(content);
   }
 
   async createScheduled(conversationId: string, userId: string, input: CreateIntentDto) {
