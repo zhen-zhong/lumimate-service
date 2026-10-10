@@ -11,6 +11,14 @@ import { MEMORY_EXTRACTION_QUEUE, type ExtractMemoryJob, type MemoryCandidate } 
 
 const MAX_RECALLED_MEMORIES = 8;
 
+const proactivePolicySelect = Prisma.validator<Prisma.ProactivePolicySelect>()({
+  enabled: true,
+  quietHoursStart: true,
+  quietHoursEnd: true,
+  dailyLimit: true,
+  minimumIntervalMinutes: true,
+});
+
 function normalize(value: string) {
   return value.trim().replace(/\s+/g, ' ').toLocaleLowerCase('zh-CN');
 }
@@ -177,6 +185,7 @@ export class MemoryService {
       where: { userId },
       update: {},
       create: { userId },
+      select: proactivePolicySelect,
     });
   }
 
@@ -185,6 +194,7 @@ export class MemoryService {
       where: { userId },
       update: input,
       create: { userId, ...input },
+      select: proactivePolicySelect,
     });
   }
 

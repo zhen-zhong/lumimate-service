@@ -49,9 +49,9 @@
 
 ## 4. Scheduled tasks and proactive companionship
 
-- [ ] Task CRUD, timezone and repeat-rule validation
-- [ ] BullMQ delayed/repeatable jobs and idempotent execution
-- [ ] Quiet hours, daily quota, opt-out and companion frequency policy
+- [x] One-time task create/list/confirm/cancel, timezone validation and explicit confirmation; repeat rules remain unimplemented.
+- [x] BullMQ delayed jobs and worker-side execution claim; repeatable jobs, outbox and multi-instance locking remain unimplemented.
+- [x] Persisted opt-in, quiet hours, daily quota and minimum interval checks for `PROACTIVE` intents.
 - [ ] Persist generated proactive messages before delivery
 - [x] Expo Push token registration, offline delivery, ticket/receipt audit, retry and invalid-token disablement
 
