@@ -57,7 +57,7 @@ export class MemoryService {
 
   async enqueueExtraction(job: ExtractMemoryJob) {
     await this.queue.add('extract', job, {
-      jobId: `extract:${job.sourceMessageId}`,
+      jobId: `extract-${job.sourceMessageId}`,
       removeOnComplete: 1_000,
       removeOnFail: 1_000,
       attempts: 3,

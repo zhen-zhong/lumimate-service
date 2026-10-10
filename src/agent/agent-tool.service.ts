@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { AgentIntentType, AgentRunStatus, AgentToolPermission, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 
@@ -80,12 +80,19 @@ export class AgentToolService {
 
   async confirm(conversationId: string, id: string) {
     const run = await this.requireRun(conversationId, id);
-    if (run.status !== AgentRunStatus.AWAITING_CONFIRMATION) return run;
+    if (run.status === AgentRunStatus.COMPLETED) return run;
+    if (run.status !== AgentRunStatus.AWAITING_CONFIRMATION && run.status !== AgentRunStatus.FAILED) {
+      throw new ConflictException('此提醒无法确认，请重新创建');
+    }
     const claimed = await this.prisma.agentRun.updateMany({
-      where: { id, conversationId, status: AgentRunStatus.AWAITING_CONFIRMATION },
+      where: { id, conversationId, status: { in: [AgentRunStatus.AWAITING_CONFIRMATION, AgentRunStatus.FAILED] } },
       data: { status: AgentRunStatus.RUNNING, confirmedAt: new Date(), startedAt: new Date(), error: null },
     });
-    if (!claimed.count) return this.requireRun(conversationId, id);
+    if (!claimed.count) {
+      const current = await this.requireRun(conversationId, id);
+      if (current.status === AgentRunStatus.COMPLETED) return current;
+      throw new ConflictException('此提醒状态已变化，请重新创建');
+    }
 
     try {
       const current = await this.prisma.agentRun.findUniqueOrThrow({ where: { id } });

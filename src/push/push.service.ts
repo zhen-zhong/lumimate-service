@@ -116,7 +116,7 @@ export class PushService {
     await Promise.all(deliveries.map((delivery) => this.queue.add('send-push', {
       type: 'send', deliveryId: delivery.id,
     }, {
-      jobId: `push:send:${delivery.id}`,
+      jobId: `push-send-${delivery.id}`,
       attempts: 3,
       backoff: { type: 'exponential', delay: 1_000 },
       removeOnComplete: 1_000,
@@ -167,7 +167,7 @@ export class PushService {
       data: { status: PushDeliveryStatus.SENT, expoTicketId: ticket.id, sentAt: new Date(), error: null },
     });
     await this.queue.add('check-push-receipt', { type: 'receipt', deliveryId: delivery.id }, {
-      jobId: `push:receipt:${delivery.id}`,
+      jobId: `push-receipt-${delivery.id}`,
       delay: PUSH_RECEIPT_DELAY_MS,
       attempts: 3,
       backoff: { type: 'exponential', delay: 5_000 },

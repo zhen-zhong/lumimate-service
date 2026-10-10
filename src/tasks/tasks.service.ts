@@ -189,7 +189,7 @@ export class TasksService implements OnModuleInit {
   async cancel(conversationId: string, intentId: string) {
     const intent = await this.requireIntent(conversationId, intentId);
     if (TERMINAL_INTENT_STATUSES.includes(intent.status)) return intent;
-    await this.queue.remove(`intent:${intent.id}`);
+    await this.queue.remove(`intent-${intent.id}`);
     return this.prisma.agentIntent.update({
       where: { id: intent.id },
       data: { status: AgentIntentStatus.CANCELLED, cancelledAt: new Date() },
@@ -282,7 +282,7 @@ export class TasksService implements OnModuleInit {
     const delay = Math.max(0, dueAt.getTime() - Date.now());
     if (delay > MAX_SCHEDULE_DELAY) {
       await this.queue.add('execute-intent', { intentId }, {
-        jobId: `intent:${intentId}`,
+        jobId: `intent-${intentId}`,
         delay: MAX_SCHEDULE_DELAY,
         removeOnComplete: 1_000,
         removeOnFail: 1_000,
@@ -290,7 +290,7 @@ export class TasksService implements OnModuleInit {
       return;
     }
     await this.queue.add('execute-intent', { intentId }, {
-      jobId: `intent:${intentId}`,
+      jobId: `intent-${intentId}`,
       delay,
       removeOnComplete: 1_000,
       removeOnFail: 1_000,
