@@ -79,7 +79,7 @@ DELETE /v1/chats/:conversationId/intents/:intentId
 
 创建任务不会立即执行，先返回 `AWAITING_CONFIRMATION`；必须调用 `confirm` 后才会入队。主动陪伴策略默认 `enabled=false`。任务到时会写入助手消息，并向已启用的 Expo Push 设备投递通知。
 
-聊天里可先试：`明天 9 点提醒我开会`、`2026-10-10 18:30 提醒我取快递`。服务会发出 SSE `agent.run.proposed`，客户端展示确认框；取消会删除候选工具调用。当前仅解析带明确日期和时间的提醒，不会猜测时间。
+聊天里可先试：`今天 18:30 提醒我取快递`、`明天 9 点提醒我开会`、`2026-10-10 18:30 提醒我取快递`。服务会发出 SSE `agent.run.proposed`，客户端展示确认框；取消会删除候选工具调用。仅解析带日期词或完整日期与时间的提醒，不会猜测仅含时刻的请求。
 
 ### Agent Tool Run
 

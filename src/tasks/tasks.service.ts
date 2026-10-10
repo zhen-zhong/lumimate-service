@@ -80,19 +80,22 @@ function parseReminder(content: string, timezone: string) {
   if (!/(?:提醒(?:我|一下)?|别忘了|记得)/u.test(content)) return null;
   const explicit = /(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})日?[^\d]{0,12}(\d{1,2})(?::|点)(\d{1,2})?/u.exec(content);
   const relative = /(?:明天|明日)[^\d]{0,12}(\d{1,2})(?::|点)(\d{1,2})?/u.exec(content);
-  const timeMatch = explicit ?? relative;
+  const sameDay = /(?:今天|今日)[^\d]{0,12}(\d{1,2})(?::|点)(\d{1,2})?/u.exec(content);
+  const timeMatch = explicit ?? relative ?? sameDay;
   if (!timeMatch) return null;
   const hour = Number(timeMatch[4] ?? timeMatch[1]);
   const minute = Number(timeMatch[5] ?? timeMatch[2] ?? 0);
   if (hour > 23 || minute > 59) return null;
   const date = explicit
     ? { year: Number(explicit[1]), month: Number(explicit[2]), day: Number(explicit[3]) }
-    : nextLocalDay(timezone);
+    : sameDay
+      ? localDateParts(timezone)
+      : nextLocalDay(timezone);
   const dueAt = zonedDate(timezone, date.year, date.month, date.day, hour, minute);
   if (dueAt.getTime() <= Date.now()) return null;
   const title = content
     .replace(/(?:提醒(?:我|一下)?|别忘了|记得)/gu, '')
-    .replace(explicit?.[0] ?? relative?.[0] ?? '', '')
+    .replace(explicit?.[0] ?? relative?.[0] ?? sameDay?.[0] ?? '', '')
     .replace(/[，,。！!？?]/gu, ' ')
     .trim();
   return title ? { title: title.slice(0, 500), dueAt } : null;
