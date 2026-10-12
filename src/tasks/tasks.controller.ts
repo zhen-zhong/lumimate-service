@@ -1,8 +1,9 @@
-import { Body, Controller, Delete, Get, NotFoundException, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post } from '@nestjs/common';
 import { ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 
 import { PrismaService } from '../database/prisma.service';
 import { CreateIntentDto } from './dto/create-intent.dto';
+import { UpdateIntentDto } from './dto/update-intent.dto';
 import { TasksService } from './tasks.service';
 
 @ApiTags('智能任务')
@@ -31,6 +32,17 @@ export class TasksController {
   async confirm(@Param('conversationId') conversationId: string, @Param('intentId') intentId: string) {
     await this.requireConversation(conversationId);
     return this.tasks.confirm(conversationId, intentId);
+  }
+
+  @Patch('/chats/:conversationId/intents/:intentId')
+  @ApiOperation({ summary: '修改待确认或已安排任务；已安排任务会重新入队' })
+  async update(
+    @Param('conversationId') conversationId: string,
+    @Param('intentId') intentId: string,
+    @Body() body: UpdateIntentDto,
+  ) {
+    await this.requireConversation(conversationId);
+    return this.tasks.update(conversationId, intentId, body);
   }
 
   @Delete('/chats/:conversationId/intents/:intentId')

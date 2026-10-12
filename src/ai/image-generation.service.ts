@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { fetch as undiciFetch, FormData, ProxyAgent, type Dispatcher } from 'undici';
 
@@ -17,6 +17,7 @@ type ImageEditInput = Omit<EditImageDto, 'modelId'> & { modelId: string };
 
 @Injectable()
 export class ImageGenerationService {
+  private readonly logger = new Logger(ImageGenerationService.name);
   private readonly dispatcher?: Dispatcher;
 
   constructor(
@@ -59,7 +60,7 @@ export class ImageGenerationService {
   }
 
   private async generateOpenAiImage(baseUrl: string, apiKey: string, input: ImageGenerationInput) {
-    const response = await this.fetch(`${baseUrl}/v1/images/generations`, {
+    const response = await this.request(`${baseUrl}/v1/images/generations`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -91,7 +92,7 @@ export class ImageGenerationService {
     if (input.background) form.set('background', input.background);
     if (input.inputFidelity) form.set('input_fidelity', input.inputFidelity);
 
-    const response = await this.fetch(`${baseUrl}/v1/images/edits`, {
+    const response = await this.request(`${baseUrl}/v1/images/edits`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}` },
       body: form,
@@ -102,7 +103,7 @@ export class ImageGenerationService {
   }
 
   private async generateGeminiImage(baseUrl: string, apiKey: string, input: ImageGenerationInput) {
-    const response = await this.fetch(`${baseUrl}/v1beta/models/${input.modelId}:generateContent`, {
+    const response = await this.request(`${baseUrl}/v1beta/models/${input.modelId}:generateContent`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -123,7 +124,7 @@ export class ImageGenerationService {
 
   private async editGeminiImage(baseUrl: string, apiKey: string, input: ImageEditInput) {
     const source = this.dataUrlParts(input.image);
-    const response = await this.fetch(`${baseUrl}/v1beta/models/${input.modelId}:generateContent`, {
+    const response = await this.request(`${baseUrl}/v1beta/models/${input.modelId}:generateContent`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -195,5 +196,15 @@ export class ImageGenerationService {
 
   private fetch(url: string, init: Parameters<typeof undiciFetch>[1]) {
     return undiciFetch(url, { ...init, dispatcher: this.dispatcher });
+  }
+
+  private async request(url: string, init: Parameters<typeof undiciFetch>[1]) {
+    try {
+      return await this.fetch(url, init);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(`图片上游请求失败：${url}`, message);
+      throw new ServiceUnavailableException('图片生成上游网络不可用，请稍后重试');
+    }
   }
 }

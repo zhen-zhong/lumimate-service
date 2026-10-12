@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { BadRequestException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { AgentIntentStatus, AgentIntentType, MessageRole, Prisma } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import { PushService } from '../push/push.service';
 import type { CreateIntentDto } from './dto/create-intent.dto';
+import type { UpdateIntentDto } from './dto/update-intent.dto';
 import { AGENT_INTENT_QUEUE, type ExecuteIntentJob } from './tasks.types';
 
 const MAX_SCHEDULE_DELAY = 2_147_483_647;
@@ -16,6 +17,10 @@ const TERMINAL_INTENT_STATUSES: AgentIntentStatus[] = [
   AgentIntentStatus.COMPLETED,
   AgentIntentStatus.CANCELLED,
   AgentIntentStatus.EXPIRED,
+];
+const EDITABLE_INTENT_STATUSES: AgentIntentStatus[] = [
+  AgentIntentStatus.AWAITING_CONFIRMATION,
+  AgentIntentStatus.SCHEDULED,
 ];
 
 function localDay(timezone: string, date = new Date()) {
@@ -204,6 +209,51 @@ export class TasksService implements OnModuleInit {
     });
     await this.enqueue(scheduled.id, scheduled.dueAt);
     return scheduled;
+  }
+
+  async update(conversationId: string, intentId: string, input: UpdateIntentDto) {
+    if (input.title === undefined && input.dueAt === undefined && input.timezone === undefined && input.payload === undefined) {
+      throw new BadRequestException('请提供需要修改的任务字段');
+    }
+
+    const intent = await this.requireIntent(conversationId, intentId);
+    if (!EDITABLE_INTENT_STATUSES.includes(intent.status)) {
+      throw new ConflictException('仅待确认或已安排的任务可以修改');
+    }
+
+    const title = input.title === undefined ? intent.title : input.title.trim();
+    if (!title) throw new BadRequestException('任务内容不能为空');
+
+    const timezone = input.timezone ?? intent.timezone;
+    this.assertTimeZone(timezone);
+    const dueAt = input.dueAt ?? intent.dueAt;
+    if (dueAt.getTime() <= Date.now()) throw new BadRequestException('任务时间必须晚于当前时间');
+
+    const wasScheduled = intent.status === AgentIntentStatus.SCHEDULED;
+    if (wasScheduled) {
+      await this.queue.remove(`intent-${intent.id}`);
+    }
+
+    try {
+      const updated = await this.prisma.agentIntent.update({
+        where: { id: intent.id },
+        data: {
+          title,
+          dueAt,
+          timezone,
+          ...(input.payload === undefined ? {} : { payload: input.payload as Prisma.InputJsonValue }),
+        },
+      });
+
+      if (updated.status === AgentIntentStatus.SCHEDULED) {
+        await this.enqueue(updated.id, updated.dueAt);
+      }
+      return updated;
+    } catch (error) {
+      // Keep the original schedule alive when database or queue persistence fails.
+      if (wasScheduled) await this.enqueue(intent.id, intent.dueAt).catch(() => undefined);
+      throw error;
+    }
   }
 
   async cancel(conversationId: string, intentId: string) {
