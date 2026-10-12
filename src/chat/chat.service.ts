@@ -9,6 +9,7 @@ import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
 import { DEFAULT_CHAT_MODEL_ID, DEFAULT_IMAGE_MODEL_ID } from '../ai/model-catalog';
 import { PrismaService } from '../database/prisma.service';
 import { MemoryService } from '../memory/memory.service';
+import { MediaStorageService } from '../media/media-storage.service';
 import { SkillPolicyResolverService } from '../skills/skill-policy-resolver.service';
 import type { CreateMessageDto } from './dto/create-message.dto';
 import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
@@ -27,7 +28,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'ima
 function isSupportedImageUrl(value: unknown, mimeType: unknown): value is string {
   return typeof value === 'string' &&
     SUPPORTED_IMAGE_MIME_TYPES.includes(String(mimeType)) &&
-    (value.startsWith(`data:${mimeType};base64,`) || /^https?:\/\//i.test(value));
+    (value.startsWith(`data:${mimeType};base64,`) || /^https?:\/\//i.test(value) || value.startsWith('/v1/media/'));
 }
 
 function getContextMessageLimit(value?: string) {
@@ -46,6 +47,7 @@ export class ChatService {
     private readonly models: AiModelCatalogService,
     private readonly prisma: PrismaService,
     private readonly memories: MemoryService,
+    private readonly media: MediaStorageService,
     private readonly tools: AgentToolService,
     private readonly skillPolicies: SkillPolicyResolverService,
     config: ConfigService,
@@ -161,7 +163,12 @@ export class ChatService {
           provider: imageModel.provider,
           protocol: imageModel.protocol,
         };
-        const attachments = result.images.map((image) => ({ url: image.dataUrl, mimeType: image.mimeType }));
+        const attachments = await Promise.all(result.images.map((image) => this.media.storeGeneratedImage({
+          conversationId: input.conversationId,
+          messageId,
+          dataUrl: image.dataUrl,
+          mimeType: image.mimeType,
+        })));
         const content = imageIntent.action === 'edit' ? '已完成图片编辑。' : '已为你生成图片。';
         await this.prisma.message.update({
           where: { id: messageId },
@@ -326,14 +333,14 @@ export class ChatService {
         outputTokens: true,
       },
     });
-    return messages.map((message) => ({
+    return Promise.all(messages.map(async (message) => ({
       id: message.id,
       role: message.role === MessageRole.USER ? 'user' : 'assistant',
       content: message.content,
       attachments: this.serializeAttachments(
         conversationId,
         message.id,
-        this.attachmentsFromMetadata(message.metadata),
+        await this.materializeInlineAttachments(conversationId, message.id, message.metadata),
       ),
       modelId: message.modelId,
       modelLabel: message.modelLabel,
@@ -341,7 +348,7 @@ export class ChatService {
       protocol: message.protocol,
       inputTokens: message.inputTokens,
       outputTokens: message.outputTokens,
-    }));
+    })));
   }
 
   async updateSettings(conversationId: string, settings: UpdateChatSettingsDto) {
@@ -376,7 +383,7 @@ export class ChatService {
 
     const attachment = this.attachmentsFromMetadata(message.metadata)[attachmentIndex];
     if (!attachment) throw new NotFoundException('图片附件不存在');
-    if (/^https?:\/\//i.test(attachment.url)) {
+    if (/^https?:\/\//i.test(attachment.url) || this.media.isManagedUrl(attachment.url)) {
       return { redirectUrl: attachment.url } as const;
     }
 
@@ -432,6 +439,33 @@ export class ChatService {
     );
   }
 
+  private async materializeInlineAttachments(
+    conversationId: string,
+    messageId: string,
+    metadata: Prisma.JsonValue | null,
+  ) {
+    const attachments = this.attachmentsFromMetadata(metadata);
+    if (!attachments.some((attachment) => attachment.url.startsWith('data:'))) return attachments;
+
+    const persisted = await Promise.all(attachments.map(async (attachment) => {
+      if (!attachment.url.startsWith('data:')) return attachment;
+      return this.media.storeGeneratedImage({
+        conversationId,
+        messageId,
+        dataUrl: attachment.url,
+        mimeType: attachment.mimeType,
+      });
+    }));
+    const baseMetadata = metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+      ? metadata as Prisma.JsonObject
+      : {};
+    await this.prisma.message.update({
+      where: { id: messageId },
+      data: { metadata: { ...baseMetadata, attachments: persisted } as Prisma.InputJsonValue },
+    });
+    return persisted;
+  }
+
   private serializeAttachments(
     conversationId: string,
     messageId: string,
@@ -454,7 +488,11 @@ export class ChatService {
     });
     for (const message of messages) {
       const attachment = this.attachmentsFromMetadata(message.metadata)[0];
-      if (attachment) return attachment;
+      if (!attachment) continue;
+      if (this.media.isManagedUrl(attachment.url)) {
+        return { ...attachment, url: await this.media.toDataUrl(attachment.url, attachment.mimeType) };
+      }
+      return attachment;
     }
     return undefined;
   }
