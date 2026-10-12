@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MessageRole, MessageStatus, Prisma } from '@prisma/client';
 
@@ -16,7 +16,7 @@ import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 import type { ChatImageAttachment } from './chat.types';
 
 export type ChatEvent = {
-  type: 'message.created' | 'message.delta' | 'image.generated' | 'agent.run.proposed' | 'message.completed' | 'error';
+  type: 'message.created' | 'message.delta' | 'image.generated' | 'image.caption' | 'agent.run.proposed' | 'message.completed' | 'error';
   data: Record<string, unknown>;
 };
 
@@ -39,6 +39,7 @@ function getContextMessageLimit(value?: string) {
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
   private readonly contextMessageLimit: number;
 
   constructor(
@@ -169,12 +170,11 @@ export class ChatService {
           dataUrl: image.dataUrl,
           mimeType: image.mimeType,
         })));
-        const content = imageIntent.action === 'edit' ? '已完成图片编辑。' : '已为你生成图片。';
         await this.prisma.message.update({
           where: { id: messageId },
           data: {
             status: MessageStatus.COMPLETED,
-            content,
+            content: '',
             metadata: { attachments, skillPlugins: skillMetadata } as Prisma.InputJsonValue,
             ...imageModelData,
           },
@@ -190,8 +190,22 @@ export class ChatService {
         };
         yield {
           type: 'message.completed',
-          data: { messageId, content, model: imageModelData, usage: {} },
+          data: { messageId, content: '', model: imageModelData, usage: {} },
         };
+
+        const caption = await this.generateImageCaption({
+          conversationId: input.conversationId,
+          request: input.content,
+          history,
+          conversation,
+          modelData,
+        });
+        if (caption) {
+          yield {
+            type: 'image.caption',
+            data: caption,
+          };
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : '图片工具暂时不可用';
         await this.prisma.message.update({
@@ -299,6 +313,75 @@ export class ChatService {
         imageModelId: DEFAULT_IMAGE_MODEL_ID,
       },
     });
+  }
+
+  private async generateImageCaption(input: {
+    conversationId: string;
+    request: string;
+    history: Array<{ role: MessageRole; content: string }>;
+    conversation: {
+      agentName: string;
+      agentProfile: string;
+      responseStyle: string;
+      modelId: string;
+    };
+    modelData: { modelId: string; modelLabel: string; provider: string; protocol: string };
+  }) {
+    let content = '';
+    let inputTokens: number | undefined;
+    let outputTokens: number | undefined;
+    try {
+      for await (const event of this.agentRunner.stream({
+        conversationId: input.conversationId,
+        agentName: input.conversation.agentName,
+        agentProfile: input.conversation.agentProfile,
+        responseStyle: input.conversation.responseStyle,
+        modelId: input.conversation.modelId,
+        imageCaption: true,
+        messages: [
+          ...input.history
+            .filter((message) => message.content.trim())
+            .map((message) => ({
+              role: message.role === MessageRole.USER ? 'user' as const : 'assistant' as const,
+              content: message.content,
+            })),
+          {
+            role: 'user',
+            content: `用户刚刚请求生成图片：${input.request}`,
+          },
+        ],
+      })) {
+        if (event.type === 'delta') content += event.delta;
+        else {
+          inputTokens = event.usage.inputTokens ?? inputTokens;
+          outputTokens = event.usage.outputTokens ?? outputTokens;
+        }
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`图片配文生成失败：${message}`);
+      return null;
+    }
+
+    const caption = content.replace(/\s+/gu, ' ').trim().slice(0, 80);
+    if (!caption) return null;
+    const message = await this.prisma.message.create({
+      data: {
+        conversationId: input.conversationId,
+        role: MessageRole.ASSISTANT,
+        status: MessageStatus.COMPLETED,
+        content: caption,
+        ...input.modelData,
+        inputTokens,
+        outputTokens,
+      },
+    });
+    return {
+      messageId: message.id,
+      content: caption,
+      model: input.modelData,
+      usage: { inputTokens, outputTokens },
+    };
   }
 
   async getSettings(conversationId: string) {

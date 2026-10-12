@@ -14,6 +14,7 @@ export type AgentRunInput = {
   skillInstructions?: string[];
   reminder?: { title: string; dueAt: string; timezone: string };
   reminderRequested?: boolean;
+  imageCaption?: boolean;
 };
 
 const SYSTEM_PROMPT = [
@@ -45,6 +46,9 @@ export class AgentRunner {
           : input.reminderRequested
             ? '用户在请求提醒，但服务未识别到未来的明确时间。请直接提示格式：今天/明天/后天/N天后 HH:mm 提醒我做某事；未写日期时按今天处理。'
             : null,
+        input.imageCaption
+          ? '图片已经生成成功。仅输出一句自然、温和的中文配文，描述或回应这张图片；不超过 40 个字，不要标题、Markdown、引号或生成过程说明。'
+          : null,
         '使用简洁中文回答；不确定的信息明确说明不确定。',
         SYSTEM_PROMPT,
       ]
