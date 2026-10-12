@@ -5,7 +5,8 @@ import { fetch as undiciFetch, FormData, ProxyAgent, type Dispatcher } from 'und
 import { AiModelCatalogService } from './ai-model-catalog.service';
 import type { CreateImageGenerationDto, EditImageDto, ImageDataUrlDto } from './dto/create-image-generation.dto';
 
-const REQUEST_TIMEOUT_MS = 300_000;
+const REQUEST_TIMEOUT_MS = 90_000;
+const REQUEST_MAX_ATTEMPTS = 2;
 
 type GeneratedImage = {
   mimeType: string;
@@ -71,7 +72,6 @@ export class ImageGenerationService {
         ...(input.n ? { n: input.n } : {}),
         ...(input.outputFormat ? { output_format: input.outputFormat } : {}),
       }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw new BadGatewayException(`图片生成服务失败（HTTP ${response.status}）`);
 
@@ -96,7 +96,6 @@ export class ImageGenerationService {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}` },
       body: form,
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw new BadGatewayException(`图片编辑服务失败（HTTP ${response.status}）`);
     return this.openAiResponseImages(await response.json(), input.outputFormat);
@@ -115,7 +114,6 @@ export class ImageGenerationService {
             : {}),
         },
       }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw new BadGatewayException(`图片生成服务失败（HTTP ${response.status}）`);
 
@@ -142,7 +140,6 @@ export class ImageGenerationService {
             : {}),
         },
       }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) throw new BadGatewayException(`图片编辑服务失败（HTTP ${response.status}）`);
     return this.geminiResponseImages(await response.json());
@@ -199,12 +196,30 @@ export class ImageGenerationService {
   }
 
   private async request(url: string, init: Parameters<typeof undiciFetch>[1]) {
-    try {
-      return await this.fetch(url, init);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`图片上游请求失败：${url}`, message);
-      throw new ServiceUnavailableException('图片生成上游网络不可用，请稍后重试');
+    const { signal: _signal, ...requestInit } = init ?? {};
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= REQUEST_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await this.fetch(url, {
+          ...requestInit,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+        if (response.status < 500 || attempt === REQUEST_MAX_ATTEMPTS) return response;
+
+        await response.body?.cancel();
+        lastError = new Error(`HTTP ${response.status}`);
+      } catch (error) {
+        lastError = error;
+      }
+
+      const message = lastError instanceof Error ? lastError.message : String(lastError);
+      this.logger.warn(`图片上游请求失败，第 ${attempt} 次尝试：${url}，${message}`);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
     }
+
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    this.logger.error(`图片上游请求最终失败：${url}`, message);
+    throw new ServiceUnavailableException('图片生成上游网络不可用，请稍后重试');
   }
 }
