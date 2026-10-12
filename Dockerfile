@@ -13,6 +13,7 @@ FROM node:24-alpine
 
 WORKDIR /app
 ENV NODE_ENV=production
+RUN apk add --no-cache ffmpeg
 
 # Keep Prisma CLI in image so deployment can run `prisma migrate deploy`.
 COPY --from=build /app/node_modules ./node_modules

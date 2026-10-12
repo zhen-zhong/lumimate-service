@@ -164,6 +164,10 @@ export class TasksService implements OnModuleInit {
     });
   }
 
+  async requireForTool(conversationId: string, intentId: string) {
+    return this.requireIntent(conversationId, intentId);
+  }
+
   getReminderCandidate(content: string, timezone = 'Asia/Shanghai') {
     this.assertTimeZone(timezone);
     return parseReminder(content, timezone);

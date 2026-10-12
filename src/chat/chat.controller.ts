@@ -9,6 +9,8 @@ import { MemoryService } from '../memory/memory.service';
 import { UpdateMemoryDto } from '../memory/dto/update-memory.dto';
 import { UpdateProactivePolicyDto } from '../memory/dto/update-proactive-policy.dto';
 import { UpdateRelationshipDto } from '../memory/dto/update-relationship.dto';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/auth.types';
 
 const settingsResponse = {
   description: '会话助手设置',
@@ -20,6 +22,7 @@ const settingsResponse = {
       responseStyle: { type: 'string', example: '温和、简洁' },
       modelId: { type: 'string', example: 'deepseek-flash' },
       imageModelId: { type: 'string', example: 'gpt-image-2.5-flare' },
+      imageUseContext: { type: 'boolean', example: true },
       contextMessageLimit: { type: 'integer', example: 100 },
       maxContextMessageLimit: { type: 'integer', example: 1000 },
     },
@@ -45,6 +48,7 @@ export class ChatController {
   async createMessage(
     @Param('conversationId') conversationId: string,
     @Body() body: CreateMessageDto,
+    @CurrentUser() user: AuthenticatedUser,
     @Res() reply: FastifyReply,
   ) {
     reply
@@ -63,7 +67,7 @@ export class ChatController {
     }, 10_000);
 
     try {
-      for await (const event of this.chatService.stream({ conversationId, ...body })) {
+      for await (const event of this.chatService.stream({ conversationId, ...body }, user.userId)) {
         reply.raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event.data)}\n\n`);
       }
     } finally {
@@ -74,8 +78,8 @@ export class ChatController {
 
   @Get(':conversationId/messages')
   @ApiOperation({ summary: '获取会话历史消息' })
-  listMessages(@Param('conversationId') conversationId: string) {
-    return this.chatService.listMessages(conversationId);
+  listMessages(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.chatService.listMessages(conversationId, user.userId);
   }
 
   @Get(':conversationId/messages/:messageId/attachments/:attachmentIndex')
@@ -84,10 +88,12 @@ export class ChatController {
     @Param('conversationId') conversationId: string,
     @Param('messageId') messageId: string,
     @Param('attachmentIndex') attachmentIndex: string,
+    @CurrentUser() user: AuthenticatedUser,
     @Res() reply: FastifyReply,
   ) {
     const attachment = await this.chatService.getImageAttachment(
       conversationId,
+      user.userId,
       messageId,
       Number(attachmentIndex),
     );
@@ -104,8 +110,8 @@ export class ChatController {
   @Get(':conversationId/settings')
   @ApiOperation({ summary: '获取会话助手设置' })
   @ApiOkResponse(settingsResponse)
-  getSettings(@Param('conversationId') conversationId: string) {
-    return this.chatService.getSettings(conversationId);
+  getSettings(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.chatService.getSettings(conversationId, user.userId);
   }
 
   @Put(':conversationId/settings')
@@ -114,64 +120,69 @@ export class ChatController {
   updateSettings(
     @Param('conversationId') conversationId: string,
     @Body() body: UpdateChatSettingsDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.chatService.updateSettings(conversationId, body);
+    return this.chatService.updateSettings(conversationId, user.userId, body);
   }
 
   @Get(':conversationId/memories')
   @ApiOperation({ summary: '获取会话记忆；候选记忆需确认后才会进入 AI 上下文' })
-  async listMemories(@Param('conversationId') conversationId: string) {
-    await this.chatService.getConversationIdentity(conversationId);
-    return this.memories.list(conversationId);
+  async listMemories(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.list(conversation.id);
   }
 
   @Post(':conversationId/memories/:memoryId/confirm')
   @ApiOperation({ summary: '确认候选记忆' })
-  confirmMemory(@Param('conversationId') conversationId: string, @Param('memoryId') memoryId: string) {
-    return this.memories.confirm(conversationId, memoryId);
+  async confirmMemory(@Param('conversationId') conversationId: string, @Param('memoryId') memoryId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.confirm(conversation.id, memoryId);
   }
 
   @Put(':conversationId/memories/:memoryId')
   @ApiOperation({ summary: '编辑并确认记忆' })
-  updateMemory(
+  async updateMemory(
     @Param('conversationId') conversationId: string,
     @Param('memoryId') memoryId: string,
     @Body() body: UpdateMemoryDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    return this.memories.update(conversationId, memoryId, body);
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.update(conversation.id, memoryId, body);
   }
 
   @Delete(':conversationId/memories/:memoryId')
   @ApiOperation({ summary: '删除记忆及其后续召回资格' })
-  removeMemory(@Param('conversationId') conversationId: string, @Param('memoryId') memoryId: string) {
-    return this.memories.remove(conversationId, memoryId);
+  async removeMemory(@Param('conversationId') conversationId: string, @Param('memoryId') memoryId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.remove(conversation.id, memoryId);
   }
 
   @Get(':conversationId/relationship')
   @ApiOperation({ summary: '获取会话关系资料' })
-  async getRelationship(@Param('conversationId') conversationId: string) {
-    const conversation = await this.chatService.getConversationIdentity(conversationId);
+  async getRelationship(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
     return this.memories.getRelationship(conversation.userId, conversation.id);
   }
 
   @Put(':conversationId/relationship')
   @ApiOperation({ summary: '更新会话关系资料' })
-  async updateRelationship(@Param('conversationId') conversationId: string, @Body() body: UpdateRelationshipDto) {
-    const conversation = await this.chatService.getConversationIdentity(conversationId);
+  async updateRelationship(@Param('conversationId') conversationId: string, @Body() body: UpdateRelationshipDto, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
     return this.memories.updateRelationship(conversation.userId, conversation.id, body);
   }
 
   @Get(':conversationId/proactive-policy')
   @ApiOperation({ summary: '获取主动陪伴策略' })
-  async getProactivePolicy(@Param('conversationId') conversationId: string) {
-    const conversation = await this.chatService.getConversationIdentity(conversationId);
+  async getProactivePolicy(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
     return this.memories.getProactivePolicy(conversation.userId);
   }
 
   @Put(':conversationId/proactive-policy')
   @ApiOperation({ summary: '更新主动陪伴策略' })
-  async updateProactivePolicy(@Param('conversationId') conversationId: string, @Body() body: UpdateProactivePolicyDto) {
-    const conversation = await this.chatService.getConversationIdentity(conversationId);
+  async updateProactivePolicy(@Param('conversationId') conversationId: string, @Body() body: UpdateProactivePolicyDto, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
     return this.memories.updateProactivePolicy(conversation.userId, body);
   }
 }

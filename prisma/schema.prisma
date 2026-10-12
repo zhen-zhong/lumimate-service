@@ -95,6 +95,18 @@ enum PushDeliveryStatus {
   CANCELLED
 }
 
+enum MediaCategory {
+  IMAGE
+  VIDEO
+  AUDIO
+}
+
+enum MediaProcessingStatus {
+  READY
+  PROCESSING
+  FAILED
+}
+
 enum SkillPluginStatus {
   ENABLED
   DISABLED
@@ -122,10 +134,14 @@ model User {
   agentRuns   AgentRun[]
   pushDevices PushDevice[]
   pushDeliveries PushDelivery[]
+  apiSessions  ApiSession[]
+  mediaAssets  MediaAsset[]
+  mediaUploads MediaUpload[]
 }
 
 model Conversation {
   id                  String    @id @default(cuid())
+  externalId          String
   userId              String
   title               String?
   agentName           String    @default("LumiMate")
@@ -133,6 +149,7 @@ model Conversation {
   responseStyle       String    @default("温和、简洁")
   modelId             String    @default("deepseek-flash")
   imageModelId        String    @default("gpt-image-2.5-flare")
+  imageUseContext     Boolean   @default(true)
   contextMessageLimit Int       @default(100)
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
@@ -144,8 +161,23 @@ model Conversation {
   agentRuns           AgentRun[]
   pushDeliveries      PushDelivery[]
   skillPlugins        ConversationSkillPlugin[]
+  mediaAssets         MediaAsset[]
+  mediaUploads        MediaUpload[]
 
   @@index([userId, updatedAt])
+  @@unique([userId, externalId])
+}
+
+model ApiSession {
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  createdAt  DateTime  @default(now())
+  lastSeenAt DateTime  @default(now())
+  revokedAt  DateTime?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
 }
 
 model AiModel {
@@ -178,8 +210,65 @@ model Message {
   outputTokens   Int?
   createdAt      DateTime      @default(now())
   conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  mediaAssets    MediaAsset[]
 
   @@index([conversationId, createdAt])
+}
+
+model MediaAsset {
+  id             String        @id
+  userId         String
+  conversationId String
+  messageId      String?
+  category       MediaCategory
+  url            String        @unique
+  mimeType       String
+  sizeBytes      Int
+  processingStatus MediaProcessingStatus @default(READY)
+  durationMs     Int?
+  width          Int?
+  height         Int?
+  thumbnailUrl   String?
+  processingError String?       @db.Text
+  createdAt      DateTime      @default(now())
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message        Message?      @relation(fields: [messageId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([conversationId, messageId])
+}
+
+model MediaUpload {
+  id             String      @id
+  userId         String
+  conversationId String
+  mimeType       String
+  totalBytes     Int
+  chunkSize      Int
+  chunkCount     Int
+  receivedBytes  Int         @default(0)
+  status         String      @default("UPLOADING")
+  expiresAt      DateTime
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  user           User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  chunks         MediaUploadChunk[]
+
+  @@index([userId, status, expiresAt])
+  @@index([conversationId, createdAt])
+}
+
+model MediaUploadChunk {
+  id        String      @id @default(cuid())
+  uploadId  String
+  index     Int
+  sizeBytes Int
+  createdAt DateTime    @default(now())
+  upload    MediaUpload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  @@unique([uploadId, index])
 }
 
 model Memory {

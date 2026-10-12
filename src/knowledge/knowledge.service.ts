@@ -68,8 +68,8 @@ function splitText(content: string) {
 export class KnowledgeService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async listBases(conversationId: string) {
-    const userId = await this.userIdForConversation(conversationId);
+  async listBases(conversationId: string, userId: string) {
+    await this.requireConversation(conversationId, userId);
     return this.prisma.knowledgeBase.findMany({
       where: { userId },
       include: { _count: { select: { documents: { where: { status: KnowledgeDocumentStatus.READY } } } } },
@@ -77,8 +77,8 @@ export class KnowledgeService {
     });
   }
 
-  async listDocuments(conversationId: string, knowledgeBaseName?: string) {
-    const userId = await this.userIdForConversation(conversationId);
+  async listDocuments(conversationId: string, userId: string, knowledgeBaseName?: string) {
+    await this.requireConversation(conversationId, userId);
     return this.prisma.knowledgeDocument.findMany({
       where: {
         userId,
@@ -102,8 +102,8 @@ export class KnowledgeService {
     });
   }
 
-  async createTextDocument(conversationId: string, input: CreateTextDocumentDto) {
-    const userId = await this.userIdForConversation(conversationId);
+  async createTextDocument(conversationId: string, userId: string, input: CreateTextDocumentDto) {
+    await this.requireConversation(conversationId, userId);
     const filename = input.filename.trim();
     const content = input.content.trim();
     const baseName = input.knowledgeBaseName?.trim() || DEFAULT_KNOWLEDGE_BASE_NAME;
@@ -146,8 +146,8 @@ export class KnowledgeService {
     });
   }
 
-  async search(conversationId: string, input: SearchKnowledgeDto) {
-    const userId = await this.userIdForConversation(conversationId);
+  async search(conversationId: string, userId: string, input: SearchKnowledgeDto) {
+    await this.requireConversation(conversationId, userId);
     const terms = termsForSearch(input.query);
     if (!terms.length) return [];
     const chunks = await this.prisma.knowledgeChunk.findMany({
@@ -184,16 +184,19 @@ export class KnowledgeService {
       }));
   }
 
-  async removeDocument(conversationId: string, documentId: string) {
-    const userId = await this.userIdForConversation(conversationId);
+  async removeDocument(conversationId: string, userId: string, documentId: string) {
+    await this.requireConversation(conversationId, userId);
     const document = await this.prisma.knowledgeDocument.findFirst({ where: { id: documentId, userId }, select: { id: true } });
     if (!document) throw new NotFoundException('知识文档不存在');
     await this.prisma.knowledgeDocument.delete({ where: { id: document.id } });
   }
 
-  private async userIdForConversation(conversationId: string) {
-    const conversation = await this.prisma.conversation.findUnique({ where: { id: conversationId }, select: { userId: true } });
+  private async requireConversation(conversationId: string, userId: string) {
+    const conversation = await this.prisma.conversation.findFirst({
+      where: { userId, OR: [{ id: conversationId }, { externalId: conversationId }] },
+      select: { id: true },
+    });
     if (!conversation) throw new NotFoundException('会话不存在');
-    return conversation.userId;
+    return conversation;
   }
 }

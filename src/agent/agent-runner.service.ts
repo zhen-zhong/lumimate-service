@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 
-import { AI_CHAT_ROUTER, type AiChatMessage, type AiChatProvider, type AiChatStreamEvent } from '../ai/interfaces/ai-chat-provider';
+import { AI_CHAT_ROUTER, type AiChatMessage, type AiChatProvider, type AiChatStreamEvent, type AiTaskToolCall } from '../ai/interfaces/ai-chat-provider';
 import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
 
 export type AgentRunInput = {
@@ -15,6 +15,7 @@ export type AgentRunInput = {
   reminder?: { title: string; dueAt: string; timezone: string };
   reminderRequested?: boolean;
   imageCaption?: boolean;
+  taskToolResult?: string;
 };
 
 const SYSTEM_PROMPT = [
@@ -49,6 +50,7 @@ export class AgentRunner {
         input.imageCaption
           ? '图片已经生成成功。仅输出一句自然、温和的中文配文，描述或回应这张图片；不超过 40 个字，不要标题、Markdown、引号或生成过程说明。'
           : null,
+        input.taskToolResult ? `已执行受控任务工具，结果如下：${input.taskToolResult}。据此自然回答；不可声称未确认的修改或取消已经完成。` : null,
         '使用简洁中文回答；不确定的信息明确说明不确定。',
         SYSTEM_PROMPT,
       ]
@@ -56,5 +58,10 @@ export class AgentRunner {
         .join('\n'),
       messages: input.messages,
     });
+  }
+
+  async selectTaskTool(input: { modelId: string; content: string; tasks: Array<{ id: string; title: string; dueAt: string; status: string }> }): Promise<AiTaskToolCall | null> {
+    if (!await this.models.findEnabled(input.modelId)) return null;
+    return this.provider.selectTaskTool?.(input) ?? null;
   }
 }

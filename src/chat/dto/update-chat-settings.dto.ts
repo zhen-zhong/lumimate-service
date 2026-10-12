@@ -1,5 +1,5 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
 export class UpdateChatSettingsDto {
   @ApiPropertyOptional({ description: '助手名称', maxLength: 32, example: 'LumiMate' })
@@ -31,6 +31,11 @@ export class UpdateChatSettingsDto {
   @IsString()
   @MaxLength(128)
   imageModelId?: string;
+
+  @ApiPropertyOptional({ description: '生图时是否参考角色档案与最近对话', default: true })
+  @IsOptional()
+  @IsBoolean()
+  imageUseContext?: boolean;
 
   @ApiPropertyOptional({ description: '携带的历史消息条数', minimum: 1, maximum: 1_000, example: 100 })
   @IsOptional()

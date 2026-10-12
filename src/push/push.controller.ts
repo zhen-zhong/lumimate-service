@@ -1,19 +1,21 @@
-import { Body, Controller, Delete, Get, NotFoundException, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post } from '@nestjs/common';
 import { ApiOperation, ApiParam, ApiTags } from '@nestjs/swagger';
 
-import { PrismaService } from '../database/prisma.service';
+import { ConversationAccessService } from '../auth/conversation-access.service';
+import { CurrentUser } from '../auth/current-user.decorator';
+import type { AuthenticatedUser } from '../auth/auth.types';
 import { RegisterPushDeviceDto } from './dto/register-push-device.dto';
 import { PushService } from './push.service';
 
 @ApiTags('推送通知')
 @Controller('/chats')
 export class PushController {
-  constructor(private readonly prisma: PrismaService, private readonly push: PushService) {}
+  constructor(private readonly conversations: ConversationAccessService, private readonly push: PushService) {}
 
   @Get(':conversationId/push-devices')
   @ApiOperation({ summary: '获取当前用户已登记的推送设备' })
-  async list(@Param('conversationId') conversationId: string) {
-    const conversation = await this.requireConversation(conversationId);
+  async list(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.conversations.require(user.userId, conversationId);
     return this.push.listDevices(conversation.userId);
   }
 
@@ -22,8 +24,9 @@ export class PushController {
   async register(
     @Param('conversationId') conversationId: string,
     @Body() body: RegisterPushDeviceDto,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    const conversation = await this.requireConversation(conversationId);
+    const conversation = await this.conversations.require(user.userId, conversationId);
     return this.push.registerDevice(conversation.userId, body);
   }
 
@@ -33,17 +36,9 @@ export class PushController {
   async disable(
     @Param('conversationId') conversationId: string,
     @Param('expoPushToken') expoPushToken: string,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
-    const conversation = await this.requireConversation(conversationId);
+    const conversation = await this.conversations.require(user.userId, conversationId);
     await this.push.disableDevice(conversation.userId, expoPushToken);
-  }
-
-  private async requireConversation(conversationId: string) {
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id: conversationId },
-      select: { id: true, userId: true },
-    });
-    if (!conversation) throw new NotFoundException('会话不存在');
-    return conversation;
   }
 }

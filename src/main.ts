@@ -12,6 +12,11 @@ async function bootstrap() {
     AppModule,
     new FastifyAdapter({ bodyLimit: 16 * 1024 * 1024 }),
   );
+  app.getHttpAdapter().getInstance().addContentTypeParser(
+    /^(?:image|video|audio)\//iu,
+    { parseAs: 'buffer' },
+    (_request, body, done) => done(null, body),
+  );
   const corsOrigin = process.env.CORS_ORIGIN?.split(',').map((origin) => origin.trim()) ?? true;
 
   app.enableCors({

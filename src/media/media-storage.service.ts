@@ -1,35 +1,35 @@
 import { Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { constants, createReadStream } from 'node:fs';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
 
-const IMAGE_EXTENSIONS: Record<string, string> = {
-  'image/jpeg': 'jpg',
-  'image/png': 'png',
-  'image/gif': 'gif',
-  'image/webp': 'webp',
-};
-const MIME_TYPES: Record<string, string> = {
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.mp4': 'video/mp4',
-  '.webm': 'video/webm',
-  '.mov': 'video/quicktime',
-  '.m4a': 'audio/mp4',
-  '.mp3': 'audio/mpeg',
-  '.wav': 'audio/wav',
-};
+const MEDIA_TYPES = {
+  'image/jpeg': { category: 'images', extension: 'jpg' },
+  'image/png': { category: 'images', extension: 'png' },
+  'image/gif': { category: 'images', extension: 'gif' },
+  'image/webp': { category: 'images', extension: 'webp' },
+  'video/mp4': { category: 'videos', extension: 'mp4' },
+  'video/webm': { category: 'videos', extension: 'webm' },
+  'video/quicktime': { category: 'videos', extension: 'mov' },
+  'audio/mp4': { category: 'audio', extension: 'm4a' },
+  'audio/mpeg': { category: 'audio', extension: 'mp3' },
+  'audio/wav': { category: 'audio', extension: 'wav' },
+  'audio/webm': { category: 'audio', extension: 'webm' },
+} as const;
+const MIME_TYPES = Object.fromEntries(
+  Object.entries(MEDIA_TYPES).map(([mimeType, value]) => [`.${value.extension}`, mimeType]),
+);
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 export type StoredMedia = {
   url: string;
   mimeType: string;
+  sizeBytes: number;
 };
+
+export type MediaPathCategory = 'images' | 'videos' | 'audio';
 
 @Injectable()
 export class MediaStorageService {
@@ -47,9 +47,6 @@ export class MediaStorageService {
     dataUrl: string;
     mimeType: string;
   }): Promise<StoredMedia> {
-    const extension = IMAGE_EXTENSIONS[input.mimeType];
-    if (!extension) throw new ServiceUnavailableException('图片存储格式不受支持');
-
     const prefix = `data:${input.mimeType};base64,`;
     if (!input.dataUrl.startsWith(prefix)) {
       throw new ServiceUnavailableException('图片生成结果格式无效');
@@ -58,23 +55,105 @@ export class MediaStorageService {
     const buffer = Buffer.from(input.dataUrl.slice(prefix.length), 'base64');
     if (!buffer.length) throw new ServiceUnavailableException('图片生成结果为空');
 
-    const segments = ['images', input.conversationId, input.messageId, `${randomUUID()}.${extension}`];
+    return this.store({
+      category: 'images',
+      conversationId: input.conversationId,
+      assetId: input.messageId,
+      data: buffer,
+      mimeType: input.mimeType,
+    });
+  }
+
+  categoryForMimeType(mimeType: string): MediaPathCategory | null {
+    return MEDIA_TYPES[mimeType as keyof typeof MEDIA_TYPES]?.category ?? null;
+  }
+
+  async store(input: {
+    category: MediaPathCategory;
+    conversationId: string;
+    assetId: string;
+    data: Buffer;
+    mimeType: string;
+  }): Promise<StoredMedia> {
+    const descriptor = MEDIA_TYPES[input.mimeType as keyof typeof MEDIA_TYPES];
+    if (!descriptor || descriptor.category !== input.category) {
+      throw new ServiceUnavailableException('媒体存储格式不受支持');
+    }
+    if (!input.data.length) throw new ServiceUnavailableException('媒体文件为空');
+
+    const segments = [input.category, input.conversationId, input.assetId, `${randomUUID()}.${descriptor.extension}`];
     const targetPath = this.resolvePath(segments);
     const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
     try {
       await mkdir(dirname(targetPath), { recursive: true });
-      await writeFile(temporaryPath, buffer, { flag: 'wx' });
+      await writeFile(temporaryPath, input.data, { flag: 'wx' });
       await rename(temporaryPath, targetPath);
     } catch (error) {
       await unlink(temporaryPath).catch(() => undefined);
       throw new ServiceUnavailableException('图片存储不可用，请稍后重试', { cause: error });
     }
 
-    return { url: this.publicUrl(segments), mimeType: input.mimeType };
+    return { url: this.publicUrl(segments), mimeType: input.mimeType, sizeBytes: input.data.length };
+  }
+
+  async writeUploadChunk(input: {
+    conversationId: string;
+    uploadId: string;
+    index: number;
+    data: Buffer;
+  }) {
+    const path = this.resolvePath(['uploads', input.conversationId, input.uploadId, `${input.index}.part`]);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, input.data, { flag: 'wx' });
+  }
+
+  async storeChunkedVideo(input: {
+    conversationId: string;
+    uploadId: string;
+    assetId: string;
+    chunkCount: number;
+    mimeType: string;
+  }): Promise<StoredMedia> {
+    const descriptor = MEDIA_TYPES[input.mimeType as keyof typeof MEDIA_TYPES];
+    if (!descriptor || descriptor.category !== 'videos') throw new ServiceUnavailableException('视频存储格式不受支持');
+    const segments = ['videos', input.conversationId, input.assetId, `${randomUUID()}.${descriptor.extension}`];
+    const targetPath = this.resolvePath(segments);
+    const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
+    const uploadDirectory = this.resolvePath(['uploads', input.conversationId, input.uploadId]);
+    try {
+      await mkdir(dirname(targetPath), { recursive: true });
+      for (let index = 0; index < input.chunkCount; index += 1) {
+        await appendFile(temporaryPath, await readFile(join(uploadDirectory, `${index}.part`)), { flag: index === 0 ? 'wx' : 'a' });
+      }
+      const file = await stat(temporaryPath);
+      if (!file.size) throw new Error('视频文件为空');
+      await rename(temporaryPath, targetPath);
+      await rm(uploadDirectory, { recursive: true, force: true });
+      return { url: this.publicUrl(segments), mimeType: input.mimeType, sizeBytes: file.size };
+    } catch (error) {
+      await unlink(temporaryPath).catch(() => undefined);
+      throw new ServiceUnavailableException('视频合并失败，请重新上传', { cause: error });
+    }
+  }
+
+  async removeUpload(conversationId: string, uploadId: string) {
+    await rm(this.resolvePath(['uploads', conversationId, uploadId]), { recursive: true, force: true });
+  }
+
+  async removeUploadChunk(conversationId: string, uploadId: string, index: number) {
+    await unlink(this.resolvePath(['uploads', conversationId, uploadId, `${index}.part`])).catch(() => undefined);
   }
 
   isManagedUrl(url: string) {
     return url.startsWith(`${this.publicPath}/`);
+  }
+
+  urlFor(category: string, conversationId: string, messageId: string, filename: string) {
+    return this.publicUrl([category, conversationId, messageId, filename]);
+  }
+
+  absolutePathForUrl(url: string) {
+    return this.resolvePath(this.segmentsFromUrl(url));
   }
 
   async toDataUrl(url: string, mimeType: string) {
