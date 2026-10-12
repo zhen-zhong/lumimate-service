@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MessageRole, MessageStatus, Prisma } from '@prisma/client';
 
@@ -174,7 +174,12 @@ export class ChatService {
         });
         yield {
           type: 'image.generated',
-          data: { messageId, images: attachments, action: imageIntent.action, model: imageModelData },
+          data: {
+            messageId,
+            images: this.serializeAttachments(input.conversationId, messageId, attachments),
+            action: imageIntent.action,
+            model: imageModelData,
+          },
         };
         yield {
           type: 'message.completed',
@@ -325,7 +330,11 @@ export class ChatService {
       id: message.id,
       role: message.role === MessageRole.USER ? 'user' : 'assistant',
       content: message.content,
-      attachments: this.attachmentsFromMetadata(message.metadata),
+      attachments: this.serializeAttachments(
+        conversationId,
+        message.id,
+        this.attachmentsFromMetadata(message.metadata),
+      ),
       modelId: message.modelId,
       modelLabel: message.modelLabel,
       provider: message.provider,
@@ -348,6 +357,33 @@ export class ChatService {
       data: settings,
     });
     return this.serializeSettings(conversation);
+  }
+
+  async getImageAttachment(conversationId: string, messageId: string, attachmentIndex: number) {
+    if (!Number.isSafeInteger(attachmentIndex) || attachmentIndex < 0) {
+      throw new BadRequestException('图片附件序号无效');
+    }
+
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        conversationId,
+        status: MessageStatus.COMPLETED,
+      },
+      select: { metadata: true },
+    });
+    if (!message) throw new NotFoundException('图片附件不存在');
+
+    const attachment = this.attachmentsFromMetadata(message.metadata)[attachmentIndex];
+    if (!attachment) throw new NotFoundException('图片附件不存在');
+    if (/^https?:\/\//i.test(attachment.url)) {
+      return { redirectUrl: attachment.url } as const;
+    }
+
+    const base64 = attachment.url.slice(attachment.url.indexOf(',') + 1);
+    const data = Buffer.from(base64, 'base64');
+    if (!data.length) throw new NotFoundException('图片附件不存在');
+    return { mimeType: attachment.mimeType, data } as const;
   }
 
   private serializeSettings(conversation: {
@@ -394,6 +430,19 @@ export class ChatService {
       attachment !== null && typeof attachment === 'object' && !Array.isArray(attachment) &&
       isSupportedImageUrl(attachment.url, attachment.mimeType),
     );
+  }
+
+  private serializeAttachments(
+    conversationId: string,
+    messageId: string,
+    attachments: Array<{ url: string; mimeType: string }>,
+  ) {
+    return attachments.map((attachment, index) => ({
+      ...attachment,
+      url: attachment.url.startsWith('data:')
+        ? `/v1/chats/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/attachments/${index}`
+        : attachment.url,
+    }));
   }
 
   private async latestImageAttachment(conversationId: string): Promise<ChatImageAttachment | undefined> {

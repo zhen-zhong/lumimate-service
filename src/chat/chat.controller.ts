@@ -78,6 +78,29 @@ export class ChatController {
     return this.chatService.listMessages(conversationId);
   }
 
+  @Get(':conversationId/messages/:messageId/attachments/:attachmentIndex')
+  @ApiOperation({ summary: '读取聊天图片附件' })
+  async getImageAttachment(
+    @Param('conversationId') conversationId: string,
+    @Param('messageId') messageId: string,
+    @Param('attachmentIndex') attachmentIndex: string,
+    @Res() reply: FastifyReply,
+  ) {
+    const attachment = await this.chatService.getImageAttachment(
+      conversationId,
+      messageId,
+      Number(attachmentIndex),
+    );
+    if ('redirectUrl' in attachment && typeof attachment.redirectUrl === 'string') {
+      return reply.redirect(attachment.redirectUrl);
+    }
+
+    return reply
+      .header('Cache-Control', 'private, max-age=86400')
+      .type(attachment.mimeType)
+      .send(attachment.data);
+  }
+
   @Get(':conversationId/settings')
   @ApiOperation({ summary: '获取会话助手设置' })
   @ApiOkResponse(settingsResponse)
