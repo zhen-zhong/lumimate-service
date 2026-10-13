@@ -107,6 +107,20 @@ enum MediaProcessingStatus {
   FAILED
 }
 
+enum CompanionEventSubject {
+  MEMORY
+  AGENT_RUN
+  AGENT_INTENT
+  PUSH_DELIVERY
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  DELIVERED
+  FAILED
+}
+
 enum SkillPluginStatus {
   ENABLED
   DISABLED
@@ -137,6 +151,7 @@ model User {
   apiSessions  ApiSession[]
   mediaAssets  MediaAsset[]
   mediaUploads MediaUpload[]
+  companionEvents CompanionEvent[]
 }
 
 model Conversation {
@@ -163,6 +178,7 @@ model Conversation {
   skillPlugins        ConversationSkillPlugin[]
   mediaAssets         MediaAsset[]
   mediaUploads        MediaUpload[]
+  companionEvents     CompanionEvent[]
 
   @@index([userId, updatedAt])
   @@unique([userId, externalId])
@@ -211,8 +227,46 @@ model Message {
   createdAt      DateTime      @default(now())
   conversation   Conversation  @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   mediaAssets    MediaAsset[]
+  companionEvents CompanionEvent[]
 
   @@index([conversationId, createdAt])
+}
+
+model CompanionEvent {
+  id              String                @id @default(cuid())
+  userId          String
+  conversationId  String?
+  sourceMessageId String?
+  subject         CompanionEventSubject
+  subjectId       String
+  eventType       String
+  state           String
+  detail          Json?
+  createdAt       DateTime              @default(now())
+  user            User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation    Conversation?         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceMessage   Message?              @relation(fields: [sourceMessageId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([subject, subjectId, createdAt])
+}
+
+model OutboxEvent {
+  id          String       @id @default(cuid())
+  topic       String
+  dedupKey    String       @unique
+  payload     Json
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  availableAt DateTime     @default(now())
+  processingAt DateTime?
+  deliveredAt DateTime?
+  lastError   String?      @db.Text
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([status, availableAt])
 }
 
 model MediaAsset {

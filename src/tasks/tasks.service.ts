@@ -1,10 +1,13 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
-import { AgentIntentStatus, AgentIntentType, MessageRole, Prisma } from '@prisma/client';
+import { AgentIntentStatus, AgentIntentType, CompanionEventSubject, MessageRole, Prisma } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 
 import { PrismaService } from '../database/prisma.service';
+import { CompanionTimelineService } from '../companion/companion-timeline.service';
+import { OutboxService } from '../outbox/outbox.service';
+import { OUTBOX_TOPIC_INTENT_SCHEDULE } from '../outbox/outbox.types';
 import { PushService } from '../push/push.service';
 import type { CreateIntentDto } from './dto/create-intent.dto';
 import type { UpdateIntentDto } from './dto/update-intent.dto';
@@ -129,6 +132,8 @@ export class TasksService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly push: PushService,
+    private readonly timeline: CompanionTimelineService,
+    private readonly outbox: OutboxService,
     @InjectQueue(AGENT_INTENT_QUEUE) private readonly queue: Queue<ExecuteIntentJob>,
   ) {}
 
@@ -143,7 +148,7 @@ export class TasksService implements OnModuleInit {
   async create(conversationId: string, userId: string, input: CreateIntentDto) {
     if (input.dueAt.getTime() <= Date.now()) throw new BadRequestException('任务时间必须晚于当前时间');
     this.assertTimeZone(input.timezone);
-    return this.prisma.agentIntent.create({
+    const intent = await this.prisma.agentIntent.create({
       data: {
         conversationId,
         userId,
@@ -155,6 +160,8 @@ export class TasksService implements OnModuleInit {
         idempotencyKey: randomUUID(),
       },
     });
+    await this.recordIntent(intent, 'intent.proposed');
+    return intent;
   }
 
   async list(conversationId: string) {
@@ -180,8 +187,9 @@ export class TasksService implements OnModuleInit {
   async createScheduled(conversationId: string, userId: string, input: CreateIntentDto) {
     if (input.dueAt.getTime() <= Date.now()) throw new BadRequestException('任务时间必须晚于当前时间');
     this.assertTimeZone(input.timezone);
-    const scheduled = await this.prisma.agentIntent.create({
-      data: {
+    const { scheduled, outbox } = await this.prisma.$transaction(async (transaction) => {
+      const scheduled = await transaction.agentIntent.create({
+        data: {
         conversationId,
         userId,
         type: input.type,
@@ -192,9 +200,17 @@ export class TasksService implements OnModuleInit {
         idempotencyKey: randomUUID(),
         status: AgentIntentStatus.SCHEDULED,
         confirmedAt: new Date(),
-      },
+        },
+      });
+      const outbox = await this.outbox.create(transaction, {
+        topic: OUTBOX_TOPIC_INTENT_SCHEDULE,
+        dedupKey: `intent-schedule:${scheduled.id}:${scheduled.dueAt.toISOString()}`,
+        payload: { intentId: scheduled.id, dueAt: scheduled.dueAt.toISOString() },
+      });
+      return { scheduled, outbox };
     });
-    await this.enqueue(scheduled.id, scheduled.dueAt);
+    await this.recordIntent(scheduled, 'intent.scheduled');
+    await this.outbox.publish(outbox.id);
     return scheduled;
   }
 
@@ -202,16 +218,27 @@ export class TasksService implements OnModuleInit {
     const intent = await this.requireIntent(conversationId, intentId);
     if (intent.status !== AgentIntentStatus.AWAITING_CONFIRMATION) return intent;
     if (intent.dueAt.getTime() <= Date.now()) {
-      return this.prisma.agentIntent.update({
+      const expired = await this.prisma.agentIntent.update({
         where: { id: intent.id },
         data: { status: AgentIntentStatus.EXPIRED, lastError: '确认时任务已过期' },
       });
+      await this.recordIntent(expired, 'intent.expired', { reason: '确认时任务已过期' });
+      return expired;
     }
-    const scheduled = await this.prisma.agentIntent.update({
-      where: { id: intent.id },
-      data: { status: AgentIntentStatus.SCHEDULED, confirmedAt: new Date() },
+    const { scheduled, outbox } = await this.prisma.$transaction(async (transaction) => {
+      const scheduled = await transaction.agentIntent.update({
+        where: { id: intent.id },
+        data: { status: AgentIntentStatus.SCHEDULED, confirmedAt: new Date() },
+      });
+      const outbox = await this.outbox.create(transaction, {
+        topic: OUTBOX_TOPIC_INTENT_SCHEDULE,
+        dedupKey: `intent-schedule:${scheduled.id}:${scheduled.dueAt.toISOString()}`,
+        payload: { intentId: scheduled.id, dueAt: scheduled.dueAt.toISOString() },
+      });
+      return { scheduled, outbox };
     });
-    await this.enqueue(scheduled.id, scheduled.dueAt);
+    await this.recordIntent(scheduled, 'intent.confirmed');
+    await this.outbox.publish(outbox.id);
     return scheduled;
   }
 
@@ -239,19 +266,27 @@ export class TasksService implements OnModuleInit {
     }
 
     try {
-      const updated = await this.prisma.agentIntent.update({
-        where: { id: intent.id },
-        data: {
-          title,
-          dueAt,
-          timezone,
-          ...(input.payload === undefined ? {} : { payload: input.payload as Prisma.InputJsonValue }),
-        },
+      const { updated, outbox } = await this.prisma.$transaction(async (transaction) => {
+        const updated = await transaction.agentIntent.update({
+          where: { id: intent.id },
+          data: {
+            title,
+            dueAt,
+            timezone,
+            ...(input.payload === undefined ? {} : { payload: input.payload as Prisma.InputJsonValue }),
+          },
+        });
+        const outbox = updated.status === AgentIntentStatus.SCHEDULED
+          ? await this.outbox.create(transaction, {
+            topic: OUTBOX_TOPIC_INTENT_SCHEDULE,
+            dedupKey: `intent-schedule:${updated.id}:${updated.dueAt.toISOString()}`,
+            payload: { intentId: updated.id, dueAt: updated.dueAt.toISOString() },
+          })
+          : null;
+        return { updated, outbox };
       });
-
-      if (updated.status === AgentIntentStatus.SCHEDULED) {
-        await this.enqueue(updated.id, updated.dueAt);
-      }
+      if (outbox) await this.outbox.publish(outbox.id);
+      await this.recordIntent(updated, 'intent.updated');
       return updated;
     } catch (error) {
       // Keep the original schedule alive when database or queue persistence fails.
@@ -264,10 +299,12 @@ export class TasksService implements OnModuleInit {
     const intent = await this.requireIntent(conversationId, intentId);
     if (TERMINAL_INTENT_STATUSES.includes(intent.status)) return intent;
     await this.queue.remove(`intent-${intent.id}`);
-    return this.prisma.agentIntent.update({
+    const cancelled = await this.prisma.agentIntent.update({
       where: { id: intent.id },
       data: { status: AgentIntentStatus.CANCELLED, cancelledAt: new Date() },
     });
+    await this.recordIntent(cancelled, 'intent.cancelled');
+    return cancelled;
   }
 
   async executeIntent(intentId: string) {
@@ -289,29 +326,33 @@ export class TasksService implements OnModuleInit {
       return;
     }
     const intent = await this.prisma.agentIntent.findUniqueOrThrow({ where: { id: intentId } });
+    await this.recordIntent(intent, 'intent.executing');
     try {
       if (intent.type === AgentIntentType.PROACTIVE) {
         const result = await this.checkProactivePolicy(intent.userId, intent.timezone);
         if (!result.allowed) {
           if (result.defer) {
             const dueAt = new Date(Date.now() + 15 * 60_000);
-            await this.prisma.agentIntent.update({
+            const deferred = await this.prisma.agentIntent.update({
               where: { id: intent.id },
               data: { status: AgentIntentStatus.SCHEDULED, dueAt, startedAt: null, lastError: result.reason },
             });
+            await this.recordIntent(deferred, 'intent.deferred', { reason: result.reason });
             await this.enqueue(intent.id, dueAt);
             return;
           }
-          await this.prisma.agentIntent.update({
+          const expired = await this.prisma.agentIntent.update({
             where: { id: intent.id },
             data: { status: AgentIntentStatus.EXPIRED, failedAt: new Date(), lastError: result.reason },
           });
+          await this.recordIntent(expired, 'intent.expired', { reason: result.reason });
           return;
         }
       }
-      await this.prisma.$transaction(async (transaction) => {
+      const { completed, reminderMessage, pushDeliveries } = await this.prisma.$transaction(async (transaction) => {
+        let reminderMessage: { id: string } | null = null;
         if (intent.conversationId) {
-          await transaction.message.create({
+          reminderMessage = await transaction.message.create({
             data: {
               conversationId: intent.conversationId,
               role: MessageRole.ASSISTANT,
@@ -320,7 +361,7 @@ export class TasksService implements OnModuleInit {
             },
           });
         }
-        await transaction.agentIntent.update({
+        const completed = await transaction.agentIntent.update({
           where: { id: intent.id },
           data: { status: AgentIntentStatus.COMPLETED, completedAt: new Date(), lastError: null },
         });
@@ -336,18 +377,25 @@ export class TasksService implements OnModuleInit {
             },
           });
         }
+        const pushDeliveries = await this.push.stageIntentDeliveries(transaction, intent);
+        return { completed, reminderMessage, pushDeliveries };
       });
+      await this.recordIntent(completed, 'intent.completed', {
+        ...(reminderMessage ? { messageId: reminderMessage.id } : {}),
+        pushDeliveryCount: pushDeliveries.length,
+      } as Prisma.InputJsonValue);
       try {
-        await this.push.enqueueIntent(intent);
+        await this.push.publishStagedIntent(intent, pushDeliveries);
       } catch {
-        // A push failure must not undo a completed reminder or assistant message.
+        // Outbox startup recovery handles a temporarily unavailable Redis broker.
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : '任务执行失败';
-      await this.prisma.agentIntent.update({
+      const failed = await this.prisma.agentIntent.update({
         where: { id: intent.id },
         data: { status: AgentIntentStatus.FAILED, failedAt: new Date(), lastError: message },
       });
+      await this.recordIntent(failed, 'intent.failed', { error: message });
       throw error;
     }
   }
@@ -377,6 +425,23 @@ export class TasksService implements OnModuleInit {
     const intent = await this.prisma.agentIntent.findFirst({ where: { id: intentId, conversationId } });
     if (!intent) throw new NotFoundException('任务不存在');
     return intent;
+  }
+
+  private recordIntent(
+    intent: { id: string; userId: string; conversationId: string | null; sourceMessageId: string | null; status: AgentIntentStatus },
+    eventType: string,
+    detail?: Prisma.InputJsonValue,
+  ) {
+    return this.timeline.record({
+      userId: intent.userId,
+      conversationId: intent.conversationId,
+      sourceMessageId: intent.sourceMessageId,
+      subject: CompanionEventSubject.AGENT_INTENT,
+      subjectId: intent.id,
+      eventType,
+      state: intent.status,
+      detail,
+    });
   }
 
   private assertTimeZone(timezone: string) {

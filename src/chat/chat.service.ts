@@ -10,6 +10,8 @@ import { DEFAULT_CHAT_MODEL_ID, DEFAULT_IMAGE_MODEL_ID } from '../ai/model-catal
 import { PrismaService } from '../database/prisma.service';
 import { MemoryService } from '../memory/memory.service';
 import { MediaAssetService } from '../media/media-asset.service';
+import { OutboxService } from '../outbox/outbox.service';
+import { OUTBOX_TOPIC_MEMORY_EXTRACT } from '../outbox/outbox.types';
 import { SkillPolicyResolverService } from '../skills/skill-policy-resolver.service';
 import type { CreateMessageDto } from './dto/create-message.dto';
 import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
@@ -47,6 +49,7 @@ export class ChatService {
     private readonly models: AiModelCatalogService,
     private readonly prisma: PrismaService,
     private readonly memories: MemoryService,
+    private readonly outbox: OutboxService,
     private readonly media: MediaAssetService,
     private readonly tools: AgentToolService,
     private readonly skillPolicies: SkillPolicyResolverService,
@@ -313,27 +316,35 @@ export class ChatService {
       return;
     }
 
-    await this.prisma.message.update({
-      where: { id: messageId },
-      data: { status: MessageStatus.COMPLETED, content, inputTokens, outputTokens },
-    });
-    // Memory extraction is best-effort. Chat must still complete when Redis worker
-    // is temporarily unavailable.
-    try {
-    await this.memories.markInteraction(conversation.userId, internalConversationId);
-      await this.memories.enqueueExtraction({
-        userId: conversation.userId,
-        conversationId: internalConversationId,
-        sourceMessageId: userMessage.id,
-        content: input.content,
+    const { memoryOutbox } = await this.prisma.$transaction(async (transaction) => {
+      await transaction.message.update({
+        where: { id: messageId },
+        data: { status: MessageStatus.COMPLETED, content, inputTokens, outputTokens },
       });
-    } catch {
-      // Scheduled retry happens on following user messages; do not break this SSE response.
-    }
-    await this.prisma.message.update({
-      where: { id: userMessage.id },
-      data: { inputTokens, outputTokens: 0 },
+      await transaction.message.update({
+        where: { id: userMessage.id },
+        data: { inputTokens, outputTokens: 0 },
+      });
+      const memoryOutbox = await this.outbox.create(transaction, {
+        topic: OUTBOX_TOPIC_MEMORY_EXTRACT,
+        dedupKey: `memory-extract:${userMessage.id}`,
+        payload: {
+          userId: conversation.userId,
+          conversationId: internalConversationId,
+          sourceMessageId: userMessage.id,
+          content: input.content,
+        },
+      });
+      return { memoryOutbox };
     });
+    try {
+      await Promise.all([
+        this.memories.markInteraction(conversation.userId, internalConversationId),
+        this.outbox.publish(memoryOutbox.id),
+      ]);
+    } catch {
+      // Outbox startup recovery handles an unavailable Redis broker.
+    }
     if (proposedRun) {
       yield { type: 'agent.run.proposed', data: { run: proposedRun } };
     }

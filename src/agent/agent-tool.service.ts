@@ -1,8 +1,9 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { AgentIntentType, AgentRunStatus, AgentToolPermission, Prisma } from '@prisma/client';
+import { AgentIntentType, AgentRunStatus, AgentToolPermission, CompanionEventSubject, Prisma } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 
 import { PrismaService } from '../database/prisma.service';
+import { CompanionTimelineService } from '../companion/companion-timeline.service';
 import { type ReminderCandidate, TasksService } from '../tasks/tasks.service';
 
 export const AGENT_TOOL_NAMES = {
@@ -33,7 +34,11 @@ function isTaskCreateInput(value: unknown): value is TaskCreateInput {
 
 @Injectable()
 export class AgentToolService {
-  constructor(private readonly prisma: PrismaService, private readonly tasks: TasksService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tasks: TasksService,
+    private readonly timeline: CompanionTimelineService,
+  ) {}
 
   async proposeReminder(input: {
     userId: string;
@@ -56,7 +61,7 @@ export class AgentToolService {
       },
     });
     if (existing) return existing;
-    return this.prisma.agentRun.create({
+    const run = await this.prisma.agentRun.create({
       data: {
         userId: input.userId,
         conversationId: input.conversationId,
@@ -73,6 +78,8 @@ export class AgentToolService {
         } as Prisma.InputJsonValue,
       },
     });
+    await this.recordRun(run, 'agent_run.proposed');
+    return run;
   }
 
   async list(conversationId: string) {
@@ -129,6 +136,7 @@ export class AgentToolService {
         input: mutationInput as Prisma.InputJsonValue,
       },
     });
+    if (!existing) await this.recordRun(run, 'agent_run.proposed');
     return { run, taskToolResult: toolName === AGENT_TOOL_NAMES.TASK_CANCEL ? `已识别到要取消的提醒“${intent.title}”，等待用户确认。` : `已识别到要修改的提醒“${intent.title}”，等待用户确认。` };
   }
 
@@ -158,17 +166,21 @@ export class AgentToolService {
 
     try {
       const current = await this.prisma.agentRun.findUniqueOrThrow({ where: { id } });
+      await this.recordRun(current, 'agent_run.executing');
       const output = await this.execute(current.userId, current.conversationId, current.toolName, current.input);
-      return this.prisma.agentRun.update({
+      const completed = await this.prisma.agentRun.update({
         where: { id },
         data: { status: AgentRunStatus.COMPLETED, output: output as Prisma.InputJsonValue, completedAt: new Date() },
       });
+      await this.recordRun(completed, 'agent_run.completed');
+      return completed;
     } catch (error) {
       const message = error instanceof Error ? error.message : '工具执行失败';
-      await this.prisma.agentRun.update({
+      const failed = await this.prisma.agentRun.update({
         where: { id },
         data: { status: AgentRunStatus.FAILED, error: message },
       });
+      await this.recordRun(failed, 'agent_run.failed', { error: message });
       throw error;
     }
   }
@@ -176,10 +188,12 @@ export class AgentToolService {
   async cancel(conversationId: string, id: string) {
     const run = await this.requireRun(conversationId, id);
     if (run.status !== AgentRunStatus.AWAITING_CONFIRMATION) return run;
-    return this.prisma.agentRun.update({
+    const cancelled = await this.prisma.agentRun.update({
       where: { id },
       data: { status: AgentRunStatus.CANCELLED, cancelledAt: new Date() },
     });
+    await this.recordRun(cancelled, 'agent_run.cancelled');
+    return cancelled;
   }
 
   private async execute(userId: string, conversationId: string, toolName: string, rawInput: unknown) {
@@ -230,5 +244,22 @@ export class AgentToolService {
     const run = await this.prisma.agentRun.findFirst({ where: { id, conversationId } });
     if (!run) throw new NotFoundException('工具调用不存在');
     return run;
+  }
+
+  private recordRun(
+    run: { id: string; userId: string; conversationId: string; sourceMessageId: string | null; status: AgentRunStatus; toolName: string },
+    eventType: string,
+    detail?: Prisma.InputJsonValue,
+  ) {
+    return this.timeline.record({
+      userId: run.userId,
+      conversationId: run.conversationId,
+      sourceMessageId: run.sourceMessageId,
+      subject: CompanionEventSubject.AGENT_RUN,
+      subjectId: run.id,
+      eventType,
+      state: run.status,
+      detail: detail ?? { toolName: run.toolName },
+    });
   }
 }

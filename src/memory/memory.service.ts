@@ -1,13 +1,12 @@
-import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { MemoryCategory, MemoryStatus, Prisma } from '@prisma/client';
-import type { Queue } from 'bullmq';
+import { CompanionEventSubject, MemoryCategory, MemoryStatus, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../database/prisma.service';
+import { CompanionTimelineService } from '../companion/companion-timeline.service';
 import type { UpdateMemoryDto } from './dto/update-memory.dto';
 import type { UpdateProactivePolicyDto } from './dto/update-proactive-policy.dto';
 import type { UpdateRelationshipDto } from './dto/update-relationship.dto';
-import { MEMORY_EXTRACTION_QUEUE, type ExtractMemoryJob, type MemoryCandidate } from './memory.types';
+import type { ExtractMemoryJob, MemoryCandidate } from './memory.types';
 
 const MAX_RECALLED_MEMORIES = 8;
 
@@ -52,18 +51,8 @@ function uniqueCandidates(candidates: MemoryCandidate[]) {
 export class MemoryService {
   constructor(
     private readonly prisma: PrismaService,
-    @InjectQueue(MEMORY_EXTRACTION_QUEUE) private readonly queue: Queue<ExtractMemoryJob>,
+    private readonly timeline: CompanionTimelineService,
   ) {}
-
-  async enqueueExtraction(job: ExtractMemoryJob) {
-    await this.queue.add('extract', job, {
-      jobId: `extract-${job.sourceMessageId}`,
-      removeOnComplete: 1_000,
-      removeOnFail: 1_000,
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 1_000 },
-    });
-  }
 
   async extractCandidates(input: ExtractMemoryJob) {
     const candidates = uniqueCandidates(this.extractRuleCandidates(input.content));
@@ -80,7 +69,7 @@ export class MemoryService {
         select: { id: true, status: true },
       });
       if (existing) continue;
-      await this.prisma.memory.create({
+      const memory = await this.prisma.memory.create({
         data: {
           userId: input.userId,
           conversationId: input.conversationId,
@@ -91,6 +80,16 @@ export class MemoryService {
           sourceMessageId: input.sourceMessageId,
           confidence: candidate.confidence,
         },
+      });
+      await this.timeline.record({
+        userId: input.userId,
+        conversationId: input.conversationId,
+        sourceMessageId: input.sourceMessageId,
+        subject: CompanionEventSubject.MEMORY,
+        subjectId: memory.id,
+        eventType: 'memory.candidate_created',
+        state: MemoryStatus.CANDIDATE,
+        detail: { category: memory.category, confidence: memory.confidence },
       });
     }
   }
@@ -143,16 +142,26 @@ export class MemoryService {
   }
 
   async confirm(conversationId: string, id: string) {
-    await this.requireConversationMemory(conversationId, id);
-    return this.prisma.memory.update({
+    const memory = await this.requireConversationMemory(conversationId, id);
+    const updated = await this.prisma.memory.update({
       where: { id },
       data: { status: MemoryStatus.CONFIRMED, confirmedAt: new Date() },
     });
+    await this.timeline.record({
+      userId: memory.userId,
+      conversationId,
+      sourceMessageId: memory.sourceMessageId,
+      subject: CompanionEventSubject.MEMORY,
+      subjectId: id,
+      eventType: 'memory.confirmed',
+      state: MemoryStatus.CONFIRMED,
+    });
+    return updated;
   }
 
   async update(conversationId: string, id: string, input: UpdateMemoryDto) {
-    await this.requireConversationMemory(conversationId, id);
-    return this.prisma.memory.update({
+    const memory = await this.requireConversationMemory(conversationId, id);
+    const updated = await this.prisma.memory.update({
       where: { id },
       data: {
         ...input,
@@ -161,14 +170,34 @@ export class MemoryService {
         confirmedAt: new Date(),
       },
     });
+    await this.timeline.record({
+      userId: memory.userId,
+      conversationId,
+      sourceMessageId: memory.sourceMessageId,
+      subject: CompanionEventSubject.MEMORY,
+      subjectId: id,
+      eventType: 'memory.updated',
+      state: MemoryStatus.CONFIRMED,
+    });
+    return updated;
   }
 
   async remove(conversationId: string, id: string) {
-    await this.requireConversationMemory(conversationId, id);
-    return this.prisma.memory.update({
+    const memory = await this.requireConversationMemory(conversationId, id);
+    const updated = await this.prisma.memory.update({
       where: { id },
       data: { status: MemoryStatus.DELETED, deletedAt: new Date() },
     });
+    await this.timeline.record({
+      userId: memory.userId,
+      conversationId,
+      sourceMessageId: memory.sourceMessageId,
+      subject: CompanionEventSubject.MEMORY,
+      subjectId: id,
+      eventType: 'memory.deleted',
+      state: MemoryStatus.DELETED,
+    });
+    return updated;
   }
 
   async getRelationship(userId: string, conversationId: string) {

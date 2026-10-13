@@ -1,13 +1,13 @@
-import { InjectQueue } from '@nestjs/bullmq';
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AgentIntentType, PushDeliveryStatus, PushPlatform } from '@prisma/client';
-import type { Queue } from 'bullmq';
+import { AgentIntentType, CompanionEventSubject, Prisma, PushDeliveryStatus, PushPlatform } from '@prisma/client';
 import { request } from 'undici';
 
 import { PrismaService } from '../database/prisma.service';
+import { CompanionTimelineService } from '../companion/companion-timeline.service';
+import { OutboxService } from '../outbox/outbox.service';
+import { OUTBOX_TOPIC_PUSH_RECEIPT, OUTBOX_TOPIC_PUSH_SEND } from '../outbox/outbox.types';
 import type { RegisterPushDeviceDto } from './dto/register-push-device.dto';
-import { PUSH_QUEUE, type PushJob } from './push.types';
 
 const EXPO_PUSH_SEND_URL = 'https://exp.host/--/api/v2/push/send';
 const EXPO_PUSH_RECEIPTS_URL = 'https://exp.host/--/api/v2/push/getReceipts';
@@ -27,6 +27,19 @@ type ExpoPushReceipt = ExpoPushError & {
   status?: 'ok' | 'error';
 };
 
+type IntentPushInput = {
+  id: string;
+  userId: string;
+  conversationId: string | null;
+  type: AgentIntentType;
+  title: string;
+};
+
+type StagedPushDelivery = {
+  delivery: { id: string };
+  outbox: { id: string };
+};
+
 function errorMessage(value: unknown, fallback: string) {
   if (value instanceof Error && value.message) return value.message;
   return fallback;
@@ -41,7 +54,8 @@ export class PushService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
-    @InjectQueue(PUSH_QUEUE) private readonly queue: Queue<PushJob>,
+    private readonly timeline: CompanionTimelineService,
+    private readonly outbox: OutboxService,
   ) {}
 
   async listDevices(userId: string) {
@@ -83,24 +97,53 @@ export class PushService {
     });
   }
 
-  async enqueueIntent(input: {
-    id: string;
-    userId: string;
-    conversationId: string | null;
-    type: AgentIntentType;
-    title: string;
-  }) {
-    if (!input.conversationId) return;
-    const devices = await this.prisma.pushDevice.findMany({
+  async retryDelivery(userId: string, conversationId: string, deliveryId: string) {
+    const { queued, outbox } = await this.prisma.$transaction(async (transaction) => {
+      const delivery = await transaction.pushDelivery.findFirst({
+        where: { id: deliveryId, userId, conversationId },
+        include: { device: { select: { enabled: true } } },
+      });
+      if (!delivery) throw new NotFoundException('推送记录不存在');
+      if (delivery.status !== PushDeliveryStatus.FAILED) throw new ConflictException('仅失败的推送可以重试');
+      if (!delivery.device.enabled) throw new ConflictException('推送设备已停用，请重新开启通知后再试');
+      const queued = await transaction.pushDelivery.update({
+        where: { id: delivery.id },
+        data: {
+          status: PushDeliveryStatus.QUEUED,
+          expoTicketId: null,
+          failedAt: null,
+          error: null,
+        },
+      });
+      const outbox = await this.outbox.create(transaction, {
+        topic: OUTBOX_TOPIC_PUSH_SEND,
+        dedupKey: `push-send:${delivery.id}:retry:${delivery.attemptCount + 1}`,
+        payload: { deliveryId: delivery.id },
+      });
+      return { queued, outbox };
+    });
+    await this.recordDelivery(queued, 'push.queued', { intentId: queued.intentId, title: queued.title, retry: true });
+    await this.outbox.publish(outbox.id).catch(() => undefined);
+    return queued;
+  }
+
+  async enqueueIntent(input: IntentPushInput) {
+    const queued = await this.prisma.$transaction((transaction) => this.stageIntentDeliveries(transaction, input));
+    await this.publishStagedIntent(input, queued);
+  }
+
+  async stageIntentDeliveries(transaction: Prisma.TransactionClient, input: IntentPushInput): Promise<StagedPushDelivery[]> {
+    if (!input.conversationId) return [];
+    const devices = await transaction.pushDevice.findMany({
       where: { userId: input.userId, enabled: true },
       select: { id: true },
     });
-    if (!devices.length) return;
+    if (!devices.length) return [];
 
     const title = input.type === AgentIntentType.REMINDER ? 'LumiMate 提醒' : 'LumiMate';
     const body = input.type === AgentIntentType.REMINDER ? `提醒你：${input.title}` : input.title;
-    const deliveries = await this.prisma.$transaction(
-      devices.map((device) => this.prisma.pushDelivery.create({
+    return Promise.all(devices.map(async (device) => {
+      const delivery = await transaction.pushDelivery.create({
         data: {
           deviceId: device.id,
           userId: input.userId,
@@ -111,17 +154,27 @@ export class PushService {
           body: body.slice(0, 500),
         },
         select: { id: true },
-      })),
-    );
-    await Promise.all(deliveries.map((delivery) => this.queue.add('send-push', {
-      type: 'send', deliveryId: delivery.id,
-    }, {
-      jobId: `push-send-${delivery.id}`,
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 1_000 },
-      removeOnComplete: 1_000,
-      removeOnFail: 1_000,
+      });
+      const outbox = await this.outbox.create(transaction, {
+        topic: OUTBOX_TOPIC_PUSH_SEND,
+        dedupKey: `push-send:${delivery.id}`,
+        payload: { deliveryId: delivery.id },
+      });
+      return { delivery, outbox };
+    }));
+  }
+
+  async publishStagedIntent(input: IntentPushInput, queued: StagedPushDelivery[]) {
+    await Promise.all(queued.map(({ delivery }) => this.timeline.record({
+      userId: input.userId,
+      conversationId: input.conversationId,
+      subject: CompanionEventSubject.PUSH_DELIVERY,
+      subjectId: delivery.id,
+      eventType: 'push.queued',
+      state: PushDeliveryStatus.QUEUED,
+      detail: { intentId: input.id, title: input.title },
     })));
+    await Promise.all(queued.map(({ outbox }) => this.outbox.publish(outbox.id)));
   }
 
   async sendDelivery(deliveryId: string) {
@@ -131,10 +184,11 @@ export class PushService {
     });
     if (!delivery || delivery.status !== PushDeliveryStatus.QUEUED) return;
     if (!delivery.device.enabled) {
-      await this.prisma.pushDelivery.update({
+      const cancelled = await this.prisma.pushDelivery.update({
         where: { id: delivery.id },
         data: { status: PushDeliveryStatus.CANCELLED, error: '设备已停用' },
       });
+      await this.recordDelivery(cancelled, 'push.cancelled');
       return;
     }
 
@@ -162,18 +216,20 @@ export class PushService {
       await this.failFromExpo(delivery.id, delivery.deviceId, ticket, 'Expo 未接收推送请求');
       return;
     }
-    await this.prisma.pushDelivery.update({
-      where: { id: delivery.id },
-      data: { status: PushDeliveryStatus.SENT, expoTicketId: ticket.id, sentAt: new Date(), error: null },
+    const { sent, outbox } = await this.prisma.$transaction(async (transaction) => {
+      const sent = await transaction.pushDelivery.update({
+        where: { id: delivery.id },
+        data: { status: PushDeliveryStatus.SENT, expoTicketId: ticket.id, sentAt: new Date(), error: null },
+      });
+      const outbox = await this.outbox.create(transaction, {
+        topic: OUTBOX_TOPIC_PUSH_RECEIPT,
+        dedupKey: `push-receipt:${delivery.id}:${ticket.id}`,
+        payload: { deliveryId: delivery.id, delayMs: PUSH_RECEIPT_DELAY_MS },
+      });
+      return { sent, outbox };
     });
-    await this.queue.add('check-push-receipt', { type: 'receipt', deliveryId: delivery.id }, {
-      jobId: `push-receipt-${delivery.id}`,
-      delay: PUSH_RECEIPT_DELAY_MS,
-      attempts: 3,
-      backoff: { type: 'exponential', delay: 5_000 },
-      removeOnComplete: 1_000,
-      removeOnFail: 1_000,
-    });
+    await this.recordDelivery(sent, 'push.sent');
+    await this.outbox.publish(outbox.id);
   }
 
   async checkReceipt(deliveryId: string) {
@@ -184,22 +240,27 @@ export class PushService {
       ? response.data as Record<string, ExpoPushReceipt>
       : {};
     const receipt = receipts[delivery.expoTicketId];
-    if (!receipt) return;
+    if (!receipt) throw new Error('Expo 回执尚未就绪');
     if (receipt.status === 'ok') {
-      await this.prisma.pushDelivery.update({
+      const delivered = await this.prisma.pushDelivery.update({
         where: { id: delivery.id },
         data: { status: PushDeliveryStatus.DELIVERED, deliveredAt: new Date(), error: null },
       });
+      await this.recordDelivery(delivered, 'push.delivered');
       return;
     }
     await this.failFromExpo(delivery.id, delivery.deviceId, receipt, '推送未被设备服务接收');
   }
 
   async markDeliveryFailed(deliveryId: string, error: unknown) {
-    await this.prisma.pushDelivery.updateMany({
+    const failed = await this.prisma.pushDelivery.updateMany({
       where: { id: deliveryId, status: PushDeliveryStatus.QUEUED },
       data: { status: PushDeliveryStatus.FAILED, failedAt: new Date(), error: errorMessage(error, '推送请求失败') },
     });
+    if (failed.count) {
+      const delivery = await this.prisma.pushDelivery.findUnique({ where: { id: deliveryId } });
+      if (delivery) await this.recordDelivery(delivery, 'push.failed', { reason: errorMessage(error, '推送请求失败') });
+    }
   }
 
   private async failFromExpo(
@@ -208,7 +269,7 @@ export class PushService {
     expoError: ExpoPushError | undefined,
     fallback: string,
   ) {
-    await this.prisma.pushDelivery.update({
+    const failed = await this.prisma.pushDelivery.update({
       where: { id: deliveryId },
       data: {
         status: PushDeliveryStatus.FAILED,
@@ -216,6 +277,7 @@ export class PushService {
         error: expoError?.message ?? fallback,
       },
     });
+    await this.recordDelivery(failed, 'push.failed', { reason: expoError?.message ?? fallback });
     if (isDeviceNotRegistered(expoError)) {
       await this.prisma.pushDevice.update({ where: { id: deviceId }, data: { enabled: false } });
     }
@@ -237,5 +299,21 @@ export class PushService {
       throw new Error(payload.errors?.[0]?.message ?? `Expo Push 请求失败（HTTP ${response.statusCode}）`);
     }
     return payload;
+  }
+
+  private recordDelivery(
+    delivery: { id: string; userId: string; conversationId: string; status: PushDeliveryStatus; intentId: string | null; title: string },
+    eventType: string,
+    detail?: Record<string, unknown>,
+  ) {
+    return this.timeline.record({
+      userId: delivery.userId,
+      conversationId: delivery.conversationId,
+      subject: CompanionEventSubject.PUSH_DELIVERY,
+      subjectId: delivery.id,
+      eventType,
+      state: delivery.status,
+      detail: (detail ?? (delivery.intentId ? { intentId: delivery.intentId, title: delivery.title } : undefined)) as Prisma.InputJsonValue | undefined,
+    });
   }
 }

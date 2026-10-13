@@ -13,6 +13,7 @@
 ## 1. Identity and persistent chat
 
 - [ ] Email/OAuth login, access token and refresh token
+- [x] Guest session：设备随机凭证换取服务端 session；仅保存 token hash，全部会话与媒体按 `userId` 隔离。
 - [ ] User, companion profile, conversation and message persistence
 - [ ] Replace demo SSE output with model provider streaming
 - [ ] Media upload: signed object-storage URL, MIME/size validation, virus scan
@@ -54,6 +55,13 @@
 - [x] Persisted opt-in, quiet hours, daily quota and minimum interval checks for `PROACTIVE` intents.
 - [ ] Persist generated proactive messages before delivery
 - [x] Expo Push token registration, offline delivery, ticket/receipt audit, retry and invalid-token disablement
+
+### 4.1 Companion commitment state machine
+
+- [x] Add immutable `CompanionEvent` audit timeline for `AgentRun`、`AgentIntent`、memory and `PushDelivery` state transitions; expose user-scoped conversation timeline API.
+- [x] Add transactional Outbox for schedule, push and memory extraction; reminder schedule create/confirm/update plus push send/receipt and memory extraction now use Outbox and stale `PROCESSING` recovery.
+- [x] Expose user-scoped commitment status/timeline API. `SENT` and `DELIVERED` remain distinct.
+- [ ] Make assistant text derive from persisted state; no model claim of completion before state transition succeeds.
 
 ## 5. Knowledge base
 

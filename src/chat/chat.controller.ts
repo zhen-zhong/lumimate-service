@@ -11,6 +11,8 @@ import { UpdateProactivePolicyDto } from '../memory/dto/update-proactive-policy.
 import { UpdateRelationshipDto } from '../memory/dto/update-relationship.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
+import { CompanionTimelineService } from '../companion/companion-timeline.service';
+import { PushService } from '../push/push.service';
 
 const settingsResponse = {
   description: '会话助手设置',
@@ -33,7 +35,12 @@ const settingsResponse = {
 @ApiParam({ name: 'conversationId', description: '会话 ID' })
 @Controller('/chats')
 export class ChatController {
-  constructor(private readonly chatService: ChatService, private readonly memories: MemoryService) {}
+  constructor(
+    private readonly chatService: ChatService,
+    private readonly memories: MemoryService,
+    private readonly timeline: CompanionTimelineService,
+    private readonly push: PushService,
+  ) {}
 
   @Post(':conversationId/messages')
   @ApiOperation({ summary: '发送消息并接收 SSE 回复' })
@@ -177,6 +184,24 @@ export class ChatController {
   async getProactivePolicy(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
     const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
     return this.memories.getProactivePolicy(conversation.userId);
+  }
+
+  @Get(':conversationId/commitments')
+  @ApiOperation({ summary: '获取会话承诺状态时间线' })
+  async listCommitments(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.timeline.list(user.userId, conversation.id);
+  }
+
+  @Post(':conversationId/push-deliveries/:deliveryId/retry')
+  @ApiOperation({ summary: '重试失败的推送' })
+  async retryPushDelivery(
+    @Param('conversationId') conversationId: string,
+    @Param('deliveryId') deliveryId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.push.retryDelivery(user.userId, conversation.id, deliveryId);
   }
 
   @Put(':conversationId/proactive-policy')
