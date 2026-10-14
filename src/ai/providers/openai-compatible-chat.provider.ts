@@ -22,9 +22,7 @@ export class OpenAiCompatibleChatProvider implements AiChatProvider {
   }
 
   async *streamChat(input: AiChatRequest): AsyncGenerator<AiChatStreamEvent> {
-    if (!this.client) {
-      throw new ServiceUnavailableException(`未配置 ${this.id} Provider API Key`);
-    }
+    if (!this.client) throw new ServiceUnavailableException(`未配置 ${this.id} Provider API Key`);
 
     const stream = await this.client.chat.completions.create({
       model: input.modelId || this.model,
