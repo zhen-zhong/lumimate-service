@@ -206,7 +206,14 @@ export class MemoryService {
 
   async updateRelationship(userId: string, conversationId: string, input: UpdateRelationshipDto) {
     await this.ensureRelationship(userId, conversationId);
-    return this.prisma.relationship.update({ where: { conversationId }, data: input });
+    return this.prisma.relationship.update({
+      where: { conversationId },
+      data: {
+        ...(input.preferredName !== undefined ? { preferredName: input.preferredName?.trim() || null } : {}),
+        ...(input.relationshipSummary !== undefined ? { relationshipSummary: input.relationshipSummary?.trim() || '' } : {}),
+        ...(input.communicationStyle !== undefined ? { communicationStyle: input.communicationStyle?.trim() || '' } : {}),
+      },
+    });
   }
 
   async getProactivePolicy(userId: string) {
