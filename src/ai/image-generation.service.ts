@@ -13,6 +13,12 @@ type GeneratedImage = {
   dataUrl: string;
 };
 
+type ImageProviderResponse = {
+  ok: boolean;
+  status: number;
+  body: unknown;
+};
+
 type ImageGenerationInput = Omit<CreateImageGenerationDto, 'modelId'> & { modelId: string };
 type ImageEditInput = Omit<EditImageDto, 'modelId'> & { modelId: string };
 
@@ -75,7 +81,7 @@ export class ImageGenerationService {
     });
     if (!response.ok) throw new BadGatewayException(`图片生成服务失败（HTTP ${response.status}）`);
 
-    return this.openAiResponseImages(await response.json(), input.outputFormat);
+    return this.openAiResponseImages(response.body, input.outputFormat);
   }
 
   private async editOpenAiImage(baseUrl: string, apiKey: string, input: ImageEditInput) {
@@ -98,7 +104,7 @@ export class ImageGenerationService {
       body: form,
     });
     if (!response.ok) throw new BadGatewayException(`图片编辑服务失败（HTTP ${response.status}）`);
-    return this.openAiResponseImages(await response.json(), input.outputFormat);
+    return this.openAiResponseImages(response.body, input.outputFormat);
   }
 
   private async generateGeminiImage(baseUrl: string, apiKey: string, input: ImageGenerationInput) {
@@ -117,7 +123,7 @@ export class ImageGenerationService {
     });
     if (!response.ok) throw new BadGatewayException(`图片生成服务失败（HTTP ${response.status}）`);
 
-    return this.geminiResponseImages(await response.json());
+    return this.geminiResponseImages(response.body);
   }
 
   private async editGeminiImage(baseUrl: string, apiKey: string, input: ImageEditInput) {
@@ -142,7 +148,7 @@ export class ImageGenerationService {
       }),
     });
     if (!response.ok) throw new BadGatewayException(`图片编辑服务失败（HTTP ${response.status}）`);
-    return this.geminiResponseImages(await response.json());
+    return this.geminiResponseImages(response.body);
   }
 
   private openAiResponseImages(body: unknown, outputFormat?: 'png' | 'jpeg' | 'webp') {
@@ -195,7 +201,7 @@ export class ImageGenerationService {
     return undiciFetch(url, { ...init, dispatcher: this.dispatcher });
   }
 
-  private async request(url: string, init: Parameters<typeof undiciFetch>[1]) {
+  private async request(url: string, init: Parameters<typeof undiciFetch>[1]): Promise<ImageProviderResponse> {
     const { signal: _signal, ...requestInit } = init ?? {};
     let lastError: unknown;
 
@@ -205,9 +211,12 @@ export class ImageGenerationService {
           ...requestInit,
           signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
         });
-        if (response.status < 500 || attempt === REQUEST_MAX_ATTEMPTS) return response;
-
-        await response.body?.cancel();
+        // fetch 在收到响应头后就会返回。必须在重试范围内读完整个 body，
+        // 否则图片响应下载超时会绕过重试并把 AbortError 直接返回给用户。
+        const body = response.ok ? await response.json() : await response.text();
+        if (response.status < 500 || attempt === REQUEST_MAX_ATTEMPTS) {
+          return { ok: response.ok, status: response.status, body };
+        }
         lastError = new Error(`HTTP ${response.status}`);
       } catch (error) {
         lastError = error;

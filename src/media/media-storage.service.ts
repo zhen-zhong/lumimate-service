@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import { access, appendFile, mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
@@ -22,6 +22,7 @@ const MIME_TYPES = Object.fromEntries(
   Object.entries(MEDIA_TYPES).map(([mimeType, value]) => [`.${value.extension}`, mimeType]),
 );
 const SAFE_PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const MEDIA_WRITE_MAX_ATTEMPTS = 3;
 
 export type StoredMedia = {
   url: string;
@@ -33,6 +34,7 @@ export type MediaPathCategory = 'images' | 'videos' | 'audio';
 
 @Injectable()
 export class MediaStorageService {
+  private readonly logger = new Logger(MediaStorageService.name);
   private readonly rootPath: string;
   private readonly publicPath: string;
 
@@ -83,17 +85,25 @@ export class MediaStorageService {
 
     const segments = [input.category, input.conversationId, input.assetId, `${randomUUID()}.${descriptor.extension}`];
     const targetPath = this.resolvePath(segments);
-    const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
-    try {
-      await mkdir(dirname(targetPath), { recursive: true });
-      await writeFile(temporaryPath, input.data, { flag: 'wx' });
-      await rename(temporaryPath, targetPath);
-    } catch (error) {
-      await unlink(temporaryPath).catch(() => undefined);
-      throw new ServiceUnavailableException('图片存储不可用，请稍后重试', { cause: error });
+    for (let attempt = 1; attempt <= MEDIA_WRITE_MAX_ATTEMPTS; attempt += 1) {
+      const temporaryPath = `${targetPath}.${randomUUID()}.tmp`;
+      try {
+        await mkdir(dirname(targetPath), { recursive: true });
+        await writeFile(temporaryPath, input.data, { flag: 'wx' });
+        await rename(temporaryPath, targetPath);
+        return { url: this.publicUrl(segments), mimeType: input.mimeType, sizeBytes: input.data.length };
+      } catch (error) {
+        await unlink(temporaryPath).catch(() => undefined);
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`媒体写入失败（第 ${attempt}/${MEDIA_WRITE_MAX_ATTEMPTS} 次）：${message}`);
+        if (attempt < MEDIA_WRITE_MAX_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+        } else {
+          throw new ServiceUnavailableException('图片存储不可用，请稍后重试', { cause: error });
+        }
+      }
     }
-
-    return { url: this.publicUrl(segments), mimeType: input.mimeType, sizeBytes: input.data.length };
+    throw new ServiceUnavailableException('图片存储不可用，请稍后重试');
   }
 
   async writeUploadChunk(input: {
