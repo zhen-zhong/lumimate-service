@@ -38,7 +38,8 @@ services:
       PORT: 3000
       DATABASE_URL: postgresql://lumimate:${LUMIMATE_DB_PASSWORD}@postgres:5432/lumimate?schema=public
       REDIS_URL: redis://redis:6379
-      MEDIA_STORAGE_PATH: /app/media
+      # 最终媒体文件走 COS SDK；仅视频转码和分片暂存使用容器临时目录。
+      MEDIA_TEMP_PATH: /tmp/lumimate-media
       CORS_ORIGIN: https://liyang.live,http://localhost:8081
       TEAMOROUTER_PROXY_URL: http://proxy-mihomo:7890
     depends_on:
@@ -50,8 +51,6 @@ services:
       - default
       - gateway
       - proxy
-    volumes:
-      - /opt/lumimate-media:/app/media
 
 volumes:
   postgres-data:

@@ -130,6 +130,20 @@ DELETE /v1/chats/:conversationId/push-devices/:expoPushToken
 
 `EXPO_PUSH_ACCESS_TOKEN` 仅在 Expo Enhanced Push Security 已开启时配置。iOS 和 Android 仍需在 EAS Credentials 中配置各自 APNs/FCM 推送凭据，并重新构建原生包后测试。
 
+## 媒体存储（腾讯云 COS）
+
+生产环境通过 COS SDK 直接存取图片、视频和音频；数据库仅保存经 API 鉴权的 `/v1/media/...` 地址。客户端不能根据 COS 对象地址绕过会话归属校验。
+
+```dotenv
+COS_SECRET_ID=你的CAM编程访问SecretId
+COS_SECRET_KEY=你的CAM编程访问SecretKey
+COS_BUCKET=lumimate-1310885489
+COS_REGION=ap-beijing
+COS_PREFIX=lumimate-media
+```
+
+`COS_PREFIX` 下固定分为 `images/`、`videos/`、`audio/`。大视频先在容器 `/tmp/lumimate-media` 接收分片，再用 COS Multipart 完成最终对象上传；视频处理完成后临时文件会删除。CAM 子账号只需该前缀的对象读写、删除和 Multipart 权限，不要授予控制台登录或全量 COS 权限。
+
 ## AI Provider 配置
 
 模型由每个智能体的“高级设置 → 聊天模型”保存到会话。客户端只发送模型 ID；所有密钥只保留在服务端 `.env`。

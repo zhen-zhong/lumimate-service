@@ -92,7 +92,7 @@ export class MediaAssetService {
       chunkCount: input.chunkCount,
       mimeType: input.mimeType,
     });
-    return this.persist({ ...input, id, category: 'videos', stored });
+    return this.persistOrRemove({ ...input, id, category: 'videos', stored });
   }
 
   isManagedUrl(url: string) {
@@ -111,28 +111,29 @@ export class MediaAssetService {
     if (!asset) return;
 
     try {
-      const sourcePath = this.storage.absolutePathForUrl(asset.url);
-      const metadata = await this.probeVideo(sourcePath);
-      const thumbnailData = await this.extractVideoThumbnail(sourcePath);
-      const thumbnail = thumbnailData.length
-        ? await this.create({
-          userId: asset.userId,
-          conversationId: asset.conversationId,
-          category: 'images',
-          data: thumbnailData,
-          mimeType: 'image/jpeg',
-        })
-        : null;
-      await this.prisma.mediaAsset.update({
-        where: { id: asset.id },
-        data: {
-          processingStatus: MediaProcessingStatus.READY,
-          durationMs: metadata.durationMs,
-          width: metadata.width,
-          height: metadata.height,
-          thumbnailUrl: thumbnail?.url,
-          processingError: null,
-        },
+      await this.storage.withLocalFileForUrl(asset.url, async (sourcePath) => {
+        const metadata = await this.probeVideo(sourcePath);
+        const thumbnailData = await this.extractVideoThumbnail(sourcePath);
+        const thumbnail = thumbnailData.length
+          ? await this.create({
+            userId: asset.userId,
+            conversationId: asset.conversationId,
+            category: 'images',
+            data: thumbnailData,
+            mimeType: 'image/jpeg',
+          })
+          : null;
+        await this.prisma.mediaAsset.update({
+          where: { id: asset.id },
+          data: {
+            processingStatus: MediaProcessingStatus.READY,
+            durationMs: metadata.durationMs,
+            width: metadata.width,
+            height: metadata.height,
+            thumbnailUrl: thumbnail?.url,
+            processingError: null,
+          },
+        });
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : '视频处理失败';
@@ -160,7 +161,23 @@ export class MediaAssetService {
       data: input.data,
       mimeType: input.mimeType,
     });
-    return this.persist({ ...input, id, stored });
+    return this.persistOrRemove({ ...input, id, stored });
+  }
+
+  private async persistOrRemove(input: {
+    id: string;
+    userId: string;
+    conversationId: string;
+    messageId?: string;
+    category: MediaPathCategory;
+    stored: { url: string; mimeType: string; sizeBytes: number };
+  }) {
+    try {
+      return await this.persist(input);
+    } catch (error) {
+      await this.storage.remove(input.stored.url).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async persist(input: {
