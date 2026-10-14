@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import COS from 'cos-nodejs-sdk-v5';
+import COS = require('cos-nodejs-sdk-v5');
 import { randomUUID } from 'node:crypto';
 import { access, appendFile, mkdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
 import { constants, createReadStream, createWriteStream } from 'node:fs';
