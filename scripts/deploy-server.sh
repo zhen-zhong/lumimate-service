@@ -6,24 +6,34 @@ DEPLOY_HOST="${LUMIMATE_DEPLOY_HOST:-ubuntu@82.156.142.135}"
 DEPLOY_DIR="${LUMIMATE_DEPLOY_DIR:-/opt/lumimate-service}"
 COMPOSE_FILE="docker-compose.production.yml"
 
-command -v rsync >/dev/null || { echo '缺少 rsync'; exit 1; }
 command -v ssh >/dev/null || { echo '缺少 ssh'; exit 1; }
 
-# Server `.env` holds production credentials. Never overwrite it from local.
-rsync -az --delete \
-  --exclude '.env' \
-  --exclude '.env.local' \
-  --exclude '.git' \
-  --exclude 'node_modules' \
-  --exclude 'dist' \
-  --exclude '*.tsbuildinfo' \
-  ./ "${DEPLOY_HOST}:${DEPLOY_DIR}/"
+# Source of truth is GitHub. Production only fast-forwards its checked-out main branch.
+# Server `.env` is ignored by Git and remains untouched.
+ssh "${DEPLOY_HOST}" bash -s -- "${DEPLOY_DIR}" "${COMPOSE_FILE}" <<'REMOTE_SCRIPT'
+set -euo pipefail
 
-ssh "${DEPLOY_HOST}" "
-  set -e
-  cd '${DEPLOY_DIR}'
-  docker compose -f '${COMPOSE_FILE}' build api
-  docker compose -f '${COMPOSE_FILE}' run --rm api npx prisma migrate deploy
-  docker compose -f '${COMPOSE_FILE}' up -d api
-  docker compose -f '${COMPOSE_FILE}' ps
-"
+deploy_dir="$1"
+compose_file="$2"
+
+cd "$deploy_dir"
+
+if [[ "$(git branch --show-current)" != 'main' ]]; then
+  echo '服务器必须检出 main 分支才能部署'
+  exit 1
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo '服务器工作区有未提交改动；拒绝覆盖。请先将服务器恢复为 GitHub main。'
+  git status --short
+  exit 1
+fi
+
+git fetch --prune origin main
+git pull --ff-only origin main
+
+docker compose -f "$compose_file" build api
+docker compose -f "$compose_file" run --rm api npx prisma migrate deploy
+docker compose -f "$compose_file" up -d api
+docker compose -f "$compose_file" ps
+REMOTE_SCRIPT
