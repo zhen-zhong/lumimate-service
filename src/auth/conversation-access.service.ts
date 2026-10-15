@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 
 import { PrismaService } from '../database/prisma.service';
 
@@ -7,14 +7,23 @@ export class ConversationAccessService {
   constructor(private readonly prisma: PrismaService) {}
 
   async require(userId: string, conversationReference: string) {
-    const conversation = await this.prisma.conversation.findFirst({
+    const existing = await this.prisma.conversation.findFirst({
       where: {
         userId,
         OR: [{ id: conversationReference }, { externalId: conversationReference }],
       },
       select: { id: true, externalId: true, userId: true },
     });
-    if (!conversation) throw new NotFoundException('会话不存在');
-    return conversation;
+    if (existing) return existing;
+
+    // A guest receives a fresh API identity before opening any conversation.
+    // Task, push, and media routes may be the first request for that identity,
+    // so create its external conversation atomically instead of returning 404.
+    return this.prisma.conversation.upsert({
+      where: { userId_externalId: { userId, externalId: conversationReference } },
+      create: { userId, externalId: conversationReference },
+      update: {},
+      select: { id: true, externalId: true, userId: true },
+    });
   }
 }
