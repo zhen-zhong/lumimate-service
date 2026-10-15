@@ -3,6 +3,7 @@ import { CompanionEventSubject, MemoryCategory, MemoryStatus, Prisma } from '@pr
 
 import { PrismaService } from '../database/prisma.service';
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
+import { commitmentStateForMemory } from '../companion/companion-state';
 import type { UpdateMemoryDto } from './dto/update-memory.dto';
 import type { UpdateProactivePolicyDto } from './dto/update-proactive-policy.dto';
 import type { UpdateRelationshipDto } from './dto/update-relationship.dto';
@@ -88,7 +89,7 @@ export class MemoryService {
         subject: CompanionEventSubject.MEMORY,
         subjectId: memory.id,
         eventType: 'memory.candidate_created',
-        state: MemoryStatus.CANDIDATE,
+        state: commitmentStateForMemory(memory.status),
         detail: { category: memory.category, confidence: memory.confidence },
       });
     }
@@ -154,7 +155,7 @@ export class MemoryService {
       subject: CompanionEventSubject.MEMORY,
       subjectId: id,
       eventType: 'memory.confirmed',
-      state: MemoryStatus.CONFIRMED,
+      state: commitmentStateForMemory(updated.status),
     });
     return updated;
   }
@@ -177,7 +178,7 @@ export class MemoryService {
       subject: CompanionEventSubject.MEMORY,
       subjectId: id,
       eventType: 'memory.updated',
-      state: MemoryStatus.CONFIRMED,
+      state: commitmentStateForMemory(updated.status),
     });
     return updated;
   }
@@ -195,7 +196,7 @@ export class MemoryService {
       subject: CompanionEventSubject.MEMORY,
       subjectId: id,
       eventType: 'memory.deleted',
-      state: MemoryStatus.DELETED,
+      state: commitmentStateForMemory(updated.status),
     });
     return updated;
   }

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { CompanionEventSubject, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../database/prisma.service';
+import type { CompanionCommitmentState } from './companion-state';
 
 type TimelineWriter = Pick<PrismaService, 'companionEvent'> | Prisma.TransactionClient;
 
@@ -12,7 +13,7 @@ export type CompanionTimelineEvent = {
   subject: CompanionEventSubject;
   subjectId: string;
   eventType: string;
-  state: string;
+  state: CompanionCommitmentState;
   detail?: Prisma.InputJsonValue;
 };
 

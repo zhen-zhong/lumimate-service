@@ -5,6 +5,7 @@ import { request } from 'undici';
 
 import { PrismaService } from '../database/prisma.service';
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
+import { commitmentStateForPush } from '../companion/companion-state';
 import { OutboxService } from '../outbox/outbox.service';
 import { OUTBOX_TOPIC_PUSH_RECEIPT, OUTBOX_TOPIC_PUSH_SEND } from '../outbox/outbox.types';
 import type { RegisterPushDeviceDto } from './dto/register-push-device.dto';
@@ -171,7 +172,7 @@ export class PushService {
       subject: CompanionEventSubject.PUSH_DELIVERY,
       subjectId: delivery.id,
       eventType: 'push.queued',
-      state: PushDeliveryStatus.QUEUED,
+      state: commitmentStateForPush(PushDeliveryStatus.QUEUED),
       detail: { intentId: input.id, title: input.title },
     })));
     await Promise.all(queued.map(({ outbox }) => this.outbox.publish(outbox.id)));
@@ -312,7 +313,7 @@ export class PushService {
       subject: CompanionEventSubject.PUSH_DELIVERY,
       subjectId: delivery.id,
       eventType,
-      state: delivery.status,
+      state: commitmentStateForPush(delivery.status),
       detail: (detail ?? (delivery.intentId ? { intentId: delivery.intentId, title: delivery.title } : undefined)) as Prisma.InputJsonValue | undefined,
     });
   }

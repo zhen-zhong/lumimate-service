@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 
 import { PrismaService } from '../database/prisma.service';
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
+import { CompanionCommitmentState, commitmentStateForRun } from '../companion/companion-state';
 import { type ReminderCandidate, TasksService } from '../tasks/tasks.service';
 
 export const AGENT_TOOL_NAMES = {
@@ -78,7 +79,8 @@ export class AgentToolService {
         } as Prisma.InputJsonValue,
       },
     });
-    await this.recordRun(run, 'agent_run.proposed');
+    await this.recordRun(run, 'agent_run.proposed', undefined, CompanionCommitmentState.PROPOSED);
+    await this.recordRun(run, 'agent_run.awaiting_confirmation');
     return run;
   }
 
@@ -136,7 +138,10 @@ export class AgentToolService {
         input: mutationInput as Prisma.InputJsonValue,
       },
     });
-    if (!existing) await this.recordRun(run, 'agent_run.proposed');
+    if (!existing) {
+      await this.recordRun(run, 'agent_run.proposed', undefined, CompanionCommitmentState.PROPOSED);
+      await this.recordRun(run, 'agent_run.awaiting_confirmation');
+    }
     return { run, taskToolResult: toolName === AGENT_TOOL_NAMES.TASK_CANCEL ? `已识别到要取消的提醒“${intent.title}”，等待用户确认。` : `已识别到要修改的提醒“${intent.title}”，等待用户确认。` };
   }
 
@@ -250,6 +255,7 @@ export class AgentToolService {
     run: { id: string; userId: string; conversationId: string; sourceMessageId: string | null; status: AgentRunStatus; toolName: string },
     eventType: string,
     detail?: Prisma.InputJsonValue,
+    state = commitmentStateForRun(run.status),
   ) {
     return this.timeline.record({
       userId: run.userId,
@@ -258,7 +264,7 @@ export class AgentToolService {
       subject: CompanionEventSubject.AGENT_RUN,
       subjectId: run.id,
       eventType,
-      state: run.status,
+      state,
       detail: detail ?? { toolName: run.toolName },
     });
   }

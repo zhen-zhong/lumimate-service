@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 
 import { PrismaService } from '../database/prisma.service';
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
+import { CompanionCommitmentState, commitmentStateForIntent } from '../companion/companion-state';
 import { OutboxService } from '../outbox/outbox.service';
 import { OUTBOX_TOPIC_INTENT_SCHEDULE } from '../outbox/outbox.types';
 import { PushService } from '../push/push.service';
@@ -160,7 +161,8 @@ export class TasksService implements OnModuleInit {
         idempotencyKey: randomUUID(),
       },
     });
-    await this.recordIntent(intent, 'intent.proposed');
+    await this.recordIntent(intent, 'intent.proposed', undefined, CompanionCommitmentState.PROPOSED);
+    await this.recordIntent(intent, 'intent.awaiting_confirmation');
     return intent;
   }
 
@@ -431,6 +433,7 @@ export class TasksService implements OnModuleInit {
     intent: { id: string; userId: string; conversationId: string | null; sourceMessageId: string | null; status: AgentIntentStatus },
     eventType: string,
     detail?: Prisma.InputJsonValue,
+    state = commitmentStateForIntent(intent.status),
   ) {
     return this.timeline.record({
       userId: intent.userId,
@@ -439,7 +442,7 @@ export class TasksService implements OnModuleInit {
       subject: CompanionEventSubject.AGENT_INTENT,
       subjectId: intent.id,
       eventType,
-      state: intent.status,
+      state,
       detail,
     });
   }
