@@ -17,6 +17,8 @@ const GENERATE_IMAGE_INTENT = /(?:生成|画|绘制|创作|做)(?:一张|张|幅
 // "发我一张你现在的照片" 是让陪伴生成自己的视觉形象，不是索取本地附件。
 // 这一类自然表达不会出现“生成”二字，必须在送进纯文本聊天模型前识别出来。
 const COMPANION_PHOTO_INTENT = /^(?:(?:请|麻烦|能不能|可不可以|可以|能|我想(?:要)?|我要|想要|你(?:能|可以|愿意))\s*)?(?:(?:发|传|来|拍|展示|给)(?:给我|我)?|给我(?:发|传|来|看|看看)|看(?:看)?|要|一张|张|个|幅|你(?:现在|此刻|今天)?有(?:没有)?|有(?:没有)?)(?:一张|张|个|幅)?[\s，,:：]*.{0,32}(?:你(?:现在|此刻|今天|刚刚)?(?:的)?(?:照片|相片|自拍(?:照)?|样子|长什么样)|(?:你的|你现在的|你本人(?:的)?)?(?:照片|相片|自拍(?:照)?|selfie)|(?:现在|此刻|今天)?(?:的)?(?:照片|相片|自拍(?:照)?|selfie))/iu;
+// 也支持“今天的照片给我一张”这类先说内容、再说索取方式的语序。
+const COMPANION_PHOTO_REVERSED_INTENT = /(?:(?:你|今天|现在|此刻|刚刚|本人)(?:的)?){0,2}(?:照片|相片|自拍(?:照)?|样子|selfie).{0,20}(?:给我|发我|传我|来一张|一张|看看)/iu;
 const EDIT_IMAGE_INTENT = /(?:编辑|修改|修图|改图|重绘|替换|换成|改成|去掉|添加|保留).{0,80}(?:图|图片|背景|人物|主体|颜色|文字)|(?:把|将).{0,80}(?:改成|换成|去掉|添加|替换)/u;
 
 @Injectable()
@@ -28,7 +30,11 @@ export class ImageToolAgent {
     if (!prompt) return null;
 
     if (EDIT_IMAGE_INTENT.test(prompt)) return { action: 'edit', prompt };
-    if (!hasImage && (GENERATE_IMAGE_INTENT.test(prompt) || COMPANION_PHOTO_INTENT.test(prompt))) {
+    if (!hasImage && (
+      GENERATE_IMAGE_INTENT.test(prompt)
+      || COMPANION_PHOTO_INTENT.test(prompt)
+      || COMPANION_PHOTO_REVERSED_INTENT.test(prompt)
+    )) {
       return { action: 'generate', prompt };
     }
     return null;
