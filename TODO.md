@@ -67,6 +67,7 @@
 
 - [x] 文本/Markdown 入库、用户归属、知识库归档与文档删除级联；二进制文件上传待对象存储接入。
 - [ ] PDF/DOCX/text parsing; OCR image pipeline
+
 - [ ] 已完成文本分块、关键词检索和引用片段；待补 Embedding、pgvector 混合检索与检索评测。
 - [x] 文档删除级联删除当前分块；对象存储和向量索引接入后补物理对象清理。
 - [ ] Per-user/knowledge-base access control and retrieval evaluation set
