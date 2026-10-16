@@ -391,18 +391,11 @@ export class ChatService {
         responseStyle: input.conversation.responseStyle,
         modelId: input.conversation.modelId,
         imageCaption: true,
-        messages: [
-          ...input.history
-            .filter((message) => message.content.trim())
-            .map((message) => ({
-              role: message.role === MessageRole.USER ? 'user' as const : 'assistant' as const,
-              content: message.content,
-            })),
-          {
-            role: 'user',
-            content: `用户刚刚请求生成图片：${input.request}`,
-          },
-        ],
+        // 历史回复可能含有“不能生图”的旧拒绝；图片成功后不应把它带入配文模型。
+        messages: [{
+          role: 'user',
+          content: `图片已生成并交付。用户请求：${input.request}`,
+        }],
       })) {
         if (event.type === 'delta') content += event.delta;
         else {
