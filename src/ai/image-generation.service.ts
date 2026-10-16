@@ -7,6 +7,8 @@ import type { CreateImageGenerationDto, EditImageDto, ImageDataUrlDto } from './
 
 const REQUEST_TIMEOUT_MS = 90_000;
 const REQUEST_MAX_ATTEMPTS = 2;
+const MAX_GENERATED_IMAGE_BYTES = 12 * 1024 * 1024;
+const SUPPORTED_GENERATED_IMAGE_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 type GeneratedImage = {
   mimeType: string;
@@ -37,9 +39,10 @@ export class ImageGenerationService {
 
   async generate(input: ImageGenerationInput) {
     const { model, apiKey, baseUrl } = await this.resolveModel(input.modelId);
-    const images = model.protocol === 'openai-images'
+    const generated = model.protocol === 'openai-images'
       ? await this.generateOpenAiImage(baseUrl, apiKey, input)
       : await this.generateGeminiImage(baseUrl, apiKey, input);
+    const images = await this.materializeRemoteImages(generated);
 
     if (!images.length) throw new BadGatewayException('图片模型未返回图片');
     return { modelId: model.id, modelLabel: model.label, images };
@@ -47,9 +50,10 @@ export class ImageGenerationService {
 
   async edit(input: ImageEditInput) {
     const { model, apiKey, baseUrl } = await this.resolveModel(input.modelId);
-    const images = model.protocol === 'openai-images'
+    const generated = model.protocol === 'openai-images'
       ? await this.editOpenAiImage(baseUrl, apiKey, input)
       : await this.editGeminiImage(baseUrl, apiKey, input);
+    const images = await this.materializeRemoteImages(generated);
 
     if (!images.length) throw new BadGatewayException('图片模型未返回图片');
     return { modelId: model.id, modelLabel: model.label, images };
@@ -184,6 +188,54 @@ export class ImageGenerationService {
         return [{ mimeType: inlineData.mimeType, dataUrl: `data:${inlineData.mimeType};base64,${inlineData.data}` }];
       });
     });
+  }
+
+  // Some OpenAI-compatible providers return a short-lived HTTPS URL instead of
+  // b64_json. Chat attachments must be persisted in private COS storage, so
+  // materialize that URL before handing it to MediaAssetService.
+  private async materializeRemoteImages(images: GeneratedImage[]) {
+    return Promise.all(images.map(async (image) => {
+      if (image.dataUrl.startsWith('data:')) return image;
+      return this.downloadRemoteImage(image.dataUrl, image.mimeType);
+    }));
+  }
+
+  private async downloadRemoteImage(url: string, fallbackMimeType: string): Promise<GeneratedImage> {
+    let remote: URL;
+    try {
+      remote = new URL(url);
+    } catch {
+      throw new BadGatewayException('图片模型返回了无效地址');
+    }
+    if (remote.protocol !== 'https:') throw new BadGatewayException('图片模型返回了不安全地址');
+
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= REQUEST_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        const response = await this.fetch(remote.href, { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase() || fallbackMimeType;
+        if (!SUPPORTED_GENERATED_IMAGE_MIME_TYPES.has(contentType)) {
+          throw new Error(`不支持的图片格式：${contentType}`);
+        }
+        const contentLength = Number(response.headers.get('content-length'));
+        if (Number.isFinite(contentLength) && contentLength > MAX_GENERATED_IMAGE_BYTES) {
+          throw new Error('图片文件超过大小限制');
+        }
+        const data = Buffer.from(await response.arrayBuffer());
+        if (!data.length) throw new Error('图片文件为空');
+        if (data.length > MAX_GENERATED_IMAGE_BYTES) throw new Error('图片文件超过大小限制');
+        return { mimeType: contentType, dataUrl: `data:${contentType};base64,${data.toString('base64')}` };
+      } catch (error) {
+        lastError = error;
+        if (attempt < REQUEST_MAX_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, 1_500));
+      }
+    }
+
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    this.logger.error(`图片结果下载失败：${remote.hostname}`, message);
+    throw new ServiceUnavailableException('图片结果下载失败，请稍后重试');
   }
 
   private dataUrlParts(image: ImageDataUrlDto) {
