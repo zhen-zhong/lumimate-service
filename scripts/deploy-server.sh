@@ -34,6 +34,8 @@ git pull --ff-only origin main
 
 docker compose -f "$compose_file" build api
 docker compose -f "$compose_file" run --rm api npx prisma migrate deploy
-docker compose -f "$compose_file" up -d api
+# The image tag remains `lumimate-api:latest`; force recreation so a rebuilt
+# image always replaces an already-running API container.
+docker compose -f "$compose_file" up -d --force-recreate api
 docker compose -f "$compose_file" ps
 REMOTE_SCRIPT
