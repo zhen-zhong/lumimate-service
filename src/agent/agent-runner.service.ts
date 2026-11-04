@@ -11,6 +11,7 @@ export type AgentRunInput = {
   responseStyle: string;
   modelId: string;
   memoryContext?: string;
+  presenceContext?: string;
   skillInstructions?: string[];
   reminder?: { title: string; dueAt: string; timezone: string };
   reminderRequested?: boolean;
@@ -41,6 +42,7 @@ export class AgentRunner {
         input.agentProfile ? `角色设定：${input.agentProfile}` : null,
         `回复风格：${input.responseStyle}。`,
         input.memoryContext || null,
+        input.presenceContext || null,
         input.skillInstructions?.length ? ['已启用技能规则：', ...input.skillInstructions].join('\n') : null,
         input.reminder
           ? `服务已识别提醒“${input.reminder.title}”，触发时间 ${input.reminder.dueAt}（${input.reminder.timezone}）。回复中只需提示用户确认下方提醒卡；确认前不得称为已创建。`

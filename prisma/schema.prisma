@@ -165,6 +165,8 @@ model User {
   mediaUploads MediaUpload[]
   imageGenerationJobs ImageGenerationJob[]
   companionEvents CompanionEvent[]
+  companionPresences CompanionPresence[]
+  companionLifeEvents CompanionLifeEvent[]
 }
 
 model Conversation {
@@ -193,6 +195,8 @@ model Conversation {
   mediaUploads        MediaUpload[]
   imageGenerationJobs ImageGenerationJob[]
   companionEvents     CompanionEvent[]
+  companionPresence   CompanionPresence?
+  companionLifeEvents CompanionLifeEvent[]
 
   @@index([userId, updatedAt])
   @@unique([userId, externalId])
@@ -378,12 +382,16 @@ model Memory {
   status          MemoryStatus   @default(CANDIDATE)
   content         String         @db.Text
   normalizedValue String?        @db.Text
+  memoryKey       String?
   sourceMessageId String?
   confidence      Float          @default(0.5)
   visibility      String         @default("private")
   expiresAt       DateTime?
   confirmedAt     DateTime?
+  archivedAt      DateTime?
   deletedAt       DateTime?
+  supersededAt    DateTime?
+  supersededById  String?
   metadata        Json?
   createdAt       DateTime       @default(now())
   updatedAt       DateTime       @updatedAt
@@ -392,6 +400,45 @@ model Memory {
 
   @@index([userId, status, updatedAt])
   @@index([conversationId, status])
+  @@index([conversationId, memoryKey, status])
+  @@index([sourceMessageId])
+}
+
+model CompanionPresence {
+  id            String       @id @default(cuid())
+  userId        String
+  conversationId String      @unique
+  activityKey   String
+  activityLabel String
+  nextPlan      String?
+  source        String
+  lastActivityAt DateTime
+  expiresAt     DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  user          User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+  @@index([conversationId, expiresAt])
+}
+
+model CompanionLifeEvent {
+  id              String       @id @default(cuid())
+  userId          String
+  conversationId  String
+  sourceMessageId String?
+  eventType       String
+  content         String       @db.Text
+  truth           String
+  metadata        Json?
+  occurredAt      DateTime     @default(now())
+  createdAt       DateTime     @default(now())
+  user            User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, occurredAt])
+  @@index([userId, occurredAt])
   @@index([sourceMessageId])
 }
 

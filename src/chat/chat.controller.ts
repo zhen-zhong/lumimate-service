@@ -12,6 +12,7 @@ import { UpdateRelationshipDto } from '../memory/dto/update-relationship.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
+import { CompanionPresenceService } from '../companion/companion-presence.service';
 import { PushService } from '../push/push.service';
 
 const settingsResponse = {
@@ -39,6 +40,7 @@ export class ChatController {
     private readonly chatService: ChatService,
     private readonly memories: MemoryService,
     private readonly timeline: CompanionTimelineService,
+    private readonly presence: CompanionPresenceService,
     private readonly push: PushService,
   ) {}
 
@@ -139,6 +141,24 @@ export class ChatController {
     return this.memories.list(conversation.id);
   }
 
+  @Get(':conversationId/presence')
+  @ApiOperation({ summary: '获取陪伴状态与近期可追溯事件' })
+  async getPresence(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.presence.snapshot(conversation.userId, conversation.id);
+  }
+
+  @Get(':conversationId/memories/:memoryId/provenance')
+  @ApiOperation({ summary: '解释这条记忆的来源和替代关系' })
+  async getMemoryProvenance(
+    @Param('conversationId') conversationId: string,
+    @Param('memoryId') memoryId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.getProvenance(conversation.id, memoryId);
+  }
+
   @Post(':conversationId/memories/:memoryId/confirm')
   @ApiOperation({ summary: '确认候选记忆' })
   async confirmMemory(@Param('conversationId') conversationId: string, @Param('memoryId') memoryId: string, @CurrentUser() user: AuthenticatedUser) {
@@ -156,6 +176,13 @@ export class ChatController {
   ) {
     const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
     return this.memories.update(conversation.id, memoryId, body);
+  }
+
+  @Post(':conversationId/memories/:memoryId/archive')
+  @ApiOperation({ summary: '归档记忆，使其不再进入 AI 上下文' })
+  async archiveMemory(@Param('conversationId') conversationId: string, @Param('memoryId') memoryId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.archive(conversation.id, memoryId);
   }
 
   @Delete(':conversationId/memories/:memoryId')

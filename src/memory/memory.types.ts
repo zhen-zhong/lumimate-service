@@ -13,4 +13,5 @@ export type MemoryCandidate = {
   category: MemoryCategory;
   content: string;
   confidence: number;
+  memoryKey?: string;
 };

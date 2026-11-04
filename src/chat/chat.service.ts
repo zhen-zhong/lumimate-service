@@ -13,6 +13,7 @@ import { MediaAssetService } from '../media/media-asset.service';
 import { OutboxService } from '../outbox/outbox.service';
 import { OUTBOX_TOPIC_MEMORY_EXTRACT } from '../outbox/outbox.types';
 import { SkillPolicyResolverService } from '../skills/skill-policy-resolver.service';
+import { CompanionPresenceService } from '../companion/companion-presence.service';
 import type { CreateMessageDto } from './dto/create-message.dto';
 import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 import type { ChatImageAttachment } from './chat.types';
@@ -53,6 +54,7 @@ export class ChatService {
     private readonly media: MediaAssetService,
     private readonly tools: AgentToolService,
     private readonly skillPolicies: SkillPolicyResolverService,
+    private readonly presence: CompanionPresenceService,
     config: ConfigService,
   ) {
     this.contextMessageLimit = getContextMessageLimit(config.get<string>('CHAT_CONTEXT_MESSAGE_LIMIT'));
@@ -79,12 +81,15 @@ export class ChatService {
       protocol: model.protocol,
     };
     const skillPolicy = await this.skillPolicies.resolve(conversation.id);
-    const memoryContext = await this.memories.buildAgentContext({
-      userId: conversation.userId,
-      conversationId: conversation.id,
-      query: input.content,
-      excludedCategories: skillPolicy.blockedMemoryCategories,
-    });
+    const [memoryContext, presenceContext] = await Promise.all([
+      this.memories.buildAgentContext({
+        userId: conversation.userId,
+        conversationId: conversation.id,
+        query: input.content,
+        excludedCategories: skillPolicy.blockedMemoryCategories,
+      }),
+      this.presence.buildAgentContext(conversation.userId, conversation.id),
+    ]);
     const skillMetadata = skillPolicy.plugins.map((plugin) => ({
       id: plugin.pluginId,
       version: plugin.version,
@@ -277,6 +282,7 @@ export class ChatService {
         responseStyle: conversation.responseStyle,
         modelId: conversation.modelId,
         memoryContext,
+        presenceContext,
         skillInstructions: skillPolicy.instructions,
         reminder: proposedRun && reminderCandidate
           ? { title: reminderCandidate.title, dueAt: reminderCandidate.dueAt.toISOString(), timezone: 'Asia/Shanghai' }
@@ -340,6 +346,11 @@ export class ChatService {
     try {
       await Promise.all([
         this.memories.markInteraction(conversation.userId, internalConversationId),
+        this.presence.recordCompletedConversation({
+          userId: conversation.userId,
+          conversationId: internalConversationId,
+          sourceMessageId: userMessage.id,
+        }),
         this.outbox.publish(memoryOutbox.id),
       ]);
     } catch {
