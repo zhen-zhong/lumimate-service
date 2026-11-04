@@ -34,8 +34,26 @@ git pull --ff-only origin main
 
 docker compose -f "$compose_file" build api
 docker compose -f "$compose_file" run --rm api npx prisma migrate deploy
+docker compose -f "$compose_file" run --rm api npx prisma migrate status
 # The image tag remains `lumimate-api:latest`; force recreation so a rebuilt
 # image always replaces an already-running API container.
 docker compose -f "$compose_file" up -d --force-recreate api
 docker compose -f "$compose_file" ps
+
+# A running container can still contain stale code or an application that has
+# not finished booting. Health verifies dependencies; the protected route check
+# verifies that the deployed API actually registered the current chat routes.
+for attempt in $(seq 1 30); do
+  health="$(docker compose -f "$compose_file" exec -T api wget -qO- http://127.0.0.1:3000/v1/health 2>/dev/null || true)"
+  route_headers="$(docker compose -f "$compose_file" exec -T api sh -lc 'wget -qSO- -O /dev/null http://127.0.0.1:3000/v1/chats/deploy-smoke/presence 2>&1' || true)"
+  if [[ "$health" == *'"ok":true'* ]] && grep -Eq 'HTTP/[0-9.]+ 401' <<<"$route_headers"; then
+    echo '部署自检通过：health 与 presence 路由正常。'
+    exit 0
+  fi
+  sleep 1
+done
+
+echo '部署自检失败：API 未就绪或 presence 路由未注册。' >&2
+docker compose -f "$compose_file" logs --tail=200 api >&2
+exit 1
 REMOTE_SCRIPT

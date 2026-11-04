@@ -48,6 +48,25 @@ function uniqueCandidates(candidates: MemoryCandidate[]) {
   });
 }
 
+export function extractRuleMemoryCandidates(content: string): MemoryCandidate[] {
+  const source = content.trim();
+  if (!source) return [];
+  const candidates: MemoryCandidate[] = [];
+  const collect = (pattern: RegExp, category: MemoryCategory, confidence: number, memoryKey?: string) => {
+    const match = pattern.exec(source);
+    const value = match?.[1]?.trim().replace(/[。！!？?]+$/, '');
+    if (value) candidates.push({ category, content: value, confidence, memoryKey });
+  };
+  collect(/(?:请)?记住(?:我)?(?:是|的)?(.{2,120})/u, MemoryCategory.FACT, 0.92);
+  collect(/我(?:喜欢|爱)(.{2,120})/u, MemoryCategory.PREFERENCE, 0.82);
+  collect(/我(?:不喜欢|讨厌)(.{2,120})/u, MemoryCategory.PREFERENCE, 0.82);
+  collect(/(?:我住在|我住于)([^，。！!?；;]{2,120}?)(?=(?:工作|上班|学习|读书|[，。！!?；;]|$))/u, MemoryCategory.PLACE, 0.78, 'place:residence');
+  collect(/我在([^，。！!?；;]{2,120}?)(?:工作|上班|学习|读书)/u, MemoryCategory.PLACE, 0.72, 'place:work_or_study');
+  collect(/(?:我叫|我的名字是|你可以叫我)(.{2,60})/u, MemoryCategory.RELATIONSHIP, 0.88, 'relationship:preferred_name');
+  collect(/(?:别忘了|记得)(.{2,120})/u, MemoryCategory.COMMITMENT, 0.72);
+  return candidates;
+}
+
 @Injectable()
 export class MemoryService {
   constructor(
@@ -56,7 +75,7 @@ export class MemoryService {
   ) {}
 
   async extractCandidates(input: ExtractMemoryJob) {
-    const candidates = uniqueCandidates(this.extractRuleCandidates(input.content));
+    const candidates = uniqueCandidates(extractRuleMemoryCandidates(input.content));
     for (const candidate of candidates) {
       const normalizedValue = normalize(candidate.content);
       const existing = await this.prisma.memory.findFirst({
@@ -165,14 +184,12 @@ export class MemoryService {
 
   async update(conversationId: string, id: string, input: UpdateMemoryDto) {
     const memory = await this.requireConversationMemory(conversationId, id);
-    const nextCategory = input.category ?? memory.category;
-    const nextContent = input.content ?? memory.content;
     const updated = await this.prisma.memory.update({
       where: { id },
       data: {
         ...input,
         ...(input.content ? { normalizedValue: normalize(input.content) } : {}),
-        memoryKey: this.inferMemoryKey(nextCategory, nextContent) ?? memory.memoryKey,
+        ...(input.category !== undefined && input.category !== memory.category ? { memoryKey: null } : {}),
         status: MemoryStatus.CONFIRMED,
         confirmedAt: new Date(),
         archivedAt: null,
@@ -330,10 +347,7 @@ export class MemoryService {
         conversationId: memory.conversationId,
         status: MemoryStatus.CONFIRMED,
         id: { not: memory.id },
-        OR: [
-          { memoryKey: memory.memoryKey },
-          { memoryKey: null, category: memory.category },
-        ],
+        memoryKey: memory.memoryKey,
       },
       select: { id: true, userId: true, sourceMessageId: true },
     });
@@ -368,27 +382,4 @@ export class MemoryService {
     })));
   }
 
-  private inferMemoryKey(category: MemoryCategory, content: string) {
-    if (category === MemoryCategory.RELATIONSHIP) return 'relationship:preferred_name';
-    if (category === MemoryCategory.PLACE) return 'place:home_or_work';
-    return undefined;
-  }
-
-  private extractRuleCandidates(content: string): MemoryCandidate[] {
-    const source = content.trim();
-    if (!source) return [];
-    const candidates: MemoryCandidate[] = [];
-    const collect = (pattern: RegExp, category: MemoryCategory, confidence: number, memoryKey?: string) => {
-      const match = pattern.exec(source);
-      const value = match?.[1]?.trim().replace(/[。！!？?]+$/, '');
-      if (value) candidates.push({ category, content: value, confidence, memoryKey });
-    };
-    collect(/(?:请)?记住(?:我)?(?:是|的)?(.{2,120})/u, MemoryCategory.FACT, 0.92);
-    collect(/我(?:喜欢|爱)(.{2,120})/u, MemoryCategory.PREFERENCE, 0.82);
-    collect(/我(?:不喜欢|讨厌)(.{2,120})/u, MemoryCategory.PREFERENCE, 0.82);
-    collect(/我(?:住在|住于|在)(.{2,120})(?:工作|上班|学习|读书)/u, MemoryCategory.PLACE, 0.72, 'place:home_or_work');
-    collect(/(?:我叫|我的名字是|你可以叫我)(.{2,60})/u, MemoryCategory.RELATIONSHIP, 0.88, 'relationship:preferred_name');
-    collect(/(?:别忘了|记得)(.{2,120})/u, MemoryCategory.COMMITMENT, 0.72);
-    return candidates;
-  }
 }
