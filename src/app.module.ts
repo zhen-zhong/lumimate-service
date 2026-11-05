@@ -10,8 +10,10 @@ import { TasksModule } from './tasks/tasks.module';
 import { SkillPluginModule } from './skills/skill-plugin.module';
 import { KnowledgeModule } from './knowledge/knowledge.module';
 import { AuthModule } from './auth/auth.module';
+import { SupportController } from './support/support.controller';
 
 @Module({
+  controllers: [SupportController],
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     AuthModule,
