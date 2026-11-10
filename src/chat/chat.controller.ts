@@ -9,6 +9,8 @@ import { MemoryService } from '../memory/memory.service';
 import { UpdateMemoryDto } from '../memory/dto/update-memory.dto';
 import { UpdateProactivePolicyDto } from '../memory/dto/update-proactive-policy.dto';
 import { UpdateRelationshipDto } from '../memory/dto/update-relationship.dto';
+import { CreateSharedEpisodeDto } from '../memory/dto/create-shared-episode.dto';
+import { UpdateSharedEpisodeDto } from '../memory/dto/update-shared-episode.dto';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthenticatedUser } from '../auth/auth.types';
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
@@ -151,6 +153,69 @@ export class ChatController {
   async listMemories(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
     const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
     return this.memories.list(conversation.id);
+  }
+
+  @Get(':conversationId/shared-episodes')
+  @ApiOperation({ summary: '获取共同经历；已归档内容不会注入 AI 上下文' })
+  async listSharedEpisodes(@Param('conversationId') conversationId: string, @CurrentUser() user: AuthenticatedUser) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.listEpisodes(conversation.id);
+  }
+
+  @Post(':conversationId/shared-episodes')
+  @ApiOperation({ summary: '创建共同经历；可关联一条本会话消息作为来源' })
+  async createSharedEpisode(
+    @Param('conversationId') conversationId: string,
+    @Body() body: CreateSharedEpisodeDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.createEpisode(conversation.userId, conversation.id, body);
+  }
+
+  @Get(':conversationId/shared-episodes/:episodeId/provenance')
+  @ApiOperation({ summary: '查看共同经历的来源消息' })
+  async getSharedEpisodeProvenance(
+    @Param('conversationId') conversationId: string,
+    @Param('episodeId') episodeId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.getEpisodeProvenance(conversation.id, episodeId);
+  }
+
+  @Put(':conversationId/shared-episodes/:episodeId')
+  @ApiOperation({ summary: '编辑共同经历；编辑后恢复为可召回状态' })
+  async updateSharedEpisode(
+    @Param('conversationId') conversationId: string,
+    @Param('episodeId') episodeId: string,
+    @Body() body: UpdateSharedEpisodeDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.updateEpisode(conversation.id, episodeId, body);
+  }
+
+  @Post(':conversationId/shared-episodes/:episodeId/archive')
+  @ApiOperation({ summary: '归档共同经历，使其不再进入 AI 上下文' })
+  async archiveSharedEpisode(
+    @Param('conversationId') conversationId: string,
+    @Param('episodeId') episodeId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.archiveEpisode(conversation.id, episodeId);
+  }
+
+  @Delete(':conversationId/shared-episodes/:episodeId')
+  @ApiOperation({ summary: '删除共同经历，使其不再进入 AI 上下文' })
+  async removeSharedEpisode(
+    @Param('conversationId') conversationId: string,
+    @Param('episodeId') episodeId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.removeEpisode(conversation.id, episodeId);
   }
 
   @Get(':conversationId/presence')

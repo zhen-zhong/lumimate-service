@@ -83,6 +83,9 @@ test('构建模型上下文时只查询已确认记忆', async () => {
     relationship: {
       upsert: async () => ({ preferredName: null, relationshipSummary: '', communicationStyle: '' }),
     },
+    sharedEpisode: {
+      findMany: async () => [],
+    },
   } as unknown as PrismaService;
 
   await new MemoryService(prisma, {} as CompanionTimelineService).buildAgentContext({
@@ -92,4 +95,53 @@ test('构建模型上下文时只查询已确认记忆', async () => {
   });
 
   assert.equal(memoryQueries[0]?.status, MemoryStatus.CONFIRMED);
+  assert.equal(memoryQueries[0]?.layer, 'USER_FACT');
+});
+
+test('共同经历只接受本会话来源，并支持归档和删除审计', async () => {
+  const events: Array<Record<string, unknown>> = [];
+  const created: Array<Record<string, unknown>> = [];
+  const episode = {
+    id: 'episode-1',
+    userId: 'user-1',
+    conversationId: 'conversation-1',
+    sourceMessageId: 'message-1',
+    title: '雨天散步',
+    content: '一起聊了下雨天想做的事',
+  };
+  const prisma = {
+    message: {
+      findFirst: async ({ where }: { where: Record<string, unknown> }) => (
+        where.id === 'message-1' && where.conversationId === 'conversation-1' ? { id: 'message-1' } : null
+      ),
+    },
+    sharedEpisode: {
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        created.push(data);
+        return { ...episode, ...data };
+      },
+      findFirst: async () => episode,
+      update: async ({ data }: { data: Record<string, unknown> }) => ({ ...episode, ...data }),
+    },
+  } as unknown as PrismaService;
+  const timeline = {
+    record: async (event: Record<string, unknown>) => {
+      events.push(event);
+      return event;
+    },
+  } as unknown as CompanionTimelineService;
+  const service = new MemoryService(prisma, timeline);
+
+  await service.createEpisode('user-1', 'conversation-1', {
+    title: ' 雨天散步 ',
+    content: ' 一起聊了下雨天想做的事 ',
+    sourceMessageId: 'message-1',
+  });
+  await service.archiveEpisode('conversation-1', episode.id);
+  await service.removeEpisode('conversation-1', episode.id);
+
+  assert.equal(created[0]?.title, '雨天散步');
+  assert.equal(created[0]?.content, '一起聊了下雨天想做的事');
+  assert.equal(events.map((event) => event.eventType).join(','), 'shared_episode.created,shared_episode.archived,shared_episode.deleted');
+  assert.equal(events.every((event) => event.subject === 'SHARED_EPISODE'), true);
 });

@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { CompanionEventSubject, MemoryCategory, MemoryStatus, Prisma } from '@prisma/client';
+import { CompanionEventSubject, MemoryCategory, MemoryLayer, MemoryStatus, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../database/prisma.service';
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
@@ -7,6 +7,8 @@ import { commitmentStateForMemory } from '../companion/companion-state';
 import type { UpdateMemoryDto } from './dto/update-memory.dto';
 import type { UpdateProactivePolicyDto } from './dto/update-proactive-policy.dto';
 import type { UpdateRelationshipDto } from './dto/update-relationship.dto';
+import type { CreateSharedEpisodeDto } from './dto/create-shared-episode.dto';
+import type { UpdateSharedEpisodeDto } from './dto/update-shared-episode.dto';
 import type { ExtractMemoryJob, MemoryCandidate } from './memory.types';
 
 const MAX_RECALLED_MEMORIES = 8;
@@ -126,6 +128,7 @@ export class MemoryService {
     const memories = await this.prisma.memory.findMany({
       where: {
         userId: input.userId,
+        layer: MemoryLayer.USER_FACT,
         status: MemoryStatus.CONFIRMED,
         ...(excludedCategories.length ? { category: { notIn: excludedCategories as MemoryCategory[] } } : {}),
         OR: [{ conversationId: input.conversationId }, { conversationId: null }],
@@ -141,6 +144,23 @@ export class MemoryService {
       .sort((left, right) => right.score - left.score || right.memory.updatedAt.getTime() - left.memory.updatedAt.getTime())
       .slice(0, MAX_RECALLED_MEMORIES)
       .map(({ memory }) => `- ${memory.category}: ${memory.content}`);
+    const episodes = await this.prisma.sharedEpisode.findMany({
+      where: {
+        userId: input.userId,
+        conversationId: input.conversationId,
+        status: 'CONFIRMED',
+        deletedAt: null,
+        archivedAt: null,
+      },
+      orderBy: { occurredAt: 'desc' },
+      take: 12,
+      select: { title: true, content: true, occurredAt: true },
+    });
+    const relevantEpisodes = episodes
+      .map((episode) => ({ episode, score: rankMemory(`${episode.title}\n${episode.content}`, terms) }))
+      .sort((left, right) => right.score - left.score || right.episode.occurredAt.getTime() - left.episode.occurredAt.getTime())
+      .slice(0, 4)
+      .map(({ episode }) => `- ${episode.title}：${episode.content}`);
     const relationship = excludedCategories.includes(MemoryCategory.RELATIONSHIP)
       ? null
       : await this.ensureRelationship(input.userId, input.conversationId);
@@ -151,7 +171,8 @@ export class MemoryService {
     ].filter(Boolean);
     return [
       relationshipLines.length ? `关系资料（仅作自然沟通参考）：\n${relationshipLines.join('\n')}` : null,
-      relevant.length ? `已确认的长期记忆（仅在相关时使用，不要声称记忆来源）：\n${relevant.join('\n')}` : null,
+      relevantEpisodes.length ? `共同经历（只在相关时自然延续，不要捏造未发生的细节）：\n${relevantEpisodes.join('\n')}` : null,
+      relevant.length ? `已确认的用户事实（仅在相关时使用，不要声称记忆来源）：\n${relevant.join('\n')}` : null,
     ].filter(Boolean).join('\n\n');
   }
 
@@ -160,6 +181,81 @@ export class MemoryService {
       where: { conversationId, status: { not: MemoryStatus.DELETED } },
       orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
     });
+  }
+
+  async listEpisodes(conversationId: string) {
+    return this.prisma.sharedEpisode.findMany({
+      where: { conversationId, deletedAt: null },
+      orderBy: [{ archivedAt: 'asc' }, { occurredAt: 'desc' }],
+    });
+  }
+
+  async createEpisode(userId: string, conversationId: string, input: CreateSharedEpisodeDto) {
+    const title = input.title.trim();
+    const content = input.content.trim();
+    const sourceMessageId = input.sourceMessageId?.trim() || undefined;
+    const source = sourceMessageId
+      ? await this.prisma.message.findFirst({ where: { id: sourceMessageId, conversationId }, select: { id: true } })
+      : null;
+    if (sourceMessageId && !source) throw new NotFoundException('共同经历的来源消息不存在');
+    const episode = await this.prisma.sharedEpisode.create({
+      data: {
+        userId,
+        conversationId,
+        title,
+        content,
+        sourceMessageId: source?.id,
+        ...(input.occurredAt ? { occurredAt: new Date(input.occurredAt) } : {}),
+      },
+    });
+    await this.recordEpisodeEvent(episode, 'shared_episode.created', 'COMPLETED');
+    return episode;
+  }
+
+  async updateEpisode(conversationId: string, id: string, input: UpdateSharedEpisodeDto) {
+    const episode = await this.requireConversationEpisode(conversationId, id);
+    const updated = await this.prisma.sharedEpisode.update({
+      where: { id },
+      data: {
+        ...(input.title !== undefined ? { title: input.title.trim() } : {}),
+        ...(input.content !== undefined ? { content: input.content.trim() } : {}),
+        ...(input.occurredAt ? { occurredAt: new Date(input.occurredAt) } : {}),
+        archivedAt: null,
+      },
+    });
+    await this.recordEpisodeEvent(updated, 'shared_episode.updated', 'COMPLETED');
+    return updated;
+  }
+
+  async archiveEpisode(conversationId: string, id: string) {
+    await this.requireConversationEpisode(conversationId, id);
+    const updated = await this.prisma.sharedEpisode.update({
+      where: { id },
+      data: { archivedAt: new Date() },
+    });
+    await this.recordEpisodeEvent(updated, 'shared_episode.archived', 'EXPIRED');
+    return updated;
+  }
+
+  async removeEpisode(conversationId: string, id: string) {
+    await this.requireConversationEpisode(conversationId, id);
+    const updated = await this.prisma.sharedEpisode.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
+    await this.recordEpisodeEvent(updated, 'shared_episode.deleted', 'CANCELLED');
+    return updated;
+  }
+
+  async getEpisodeProvenance(conversationId: string, id: string) {
+    const episode = await this.requireConversationEpisode(conversationId, id);
+    const source = episode.sourceMessageId
+      ? await this.prisma.message.findFirst({
+        where: { id: episode.sourceMessageId, conversationId },
+        select: { id: true, role: true, content: true, createdAt: true },
+      })
+      : null;
+    return { episode, source };
   }
 
   async confirm(conversationId: string, id: string) {
@@ -331,6 +427,28 @@ export class MemoryService {
     const memory = await this.prisma.memory.findFirst({ where: { id, conversationId } });
     if (!memory) throw new NotFoundException('记忆不存在');
     return memory;
+  }
+
+  private async requireConversationEpisode(conversationId: string, id: string) {
+    const episode = await this.prisma.sharedEpisode.findFirst({ where: { id, conversationId, deletedAt: null } });
+    if (!episode) throw new NotFoundException('共同经历不存在');
+    return episode;
+  }
+
+  private recordEpisodeEvent(
+    episode: { id: string; userId: string; conversationId: string; sourceMessageId: string | null },
+    eventType: string,
+    state: 'COMPLETED' | 'EXPIRED' | 'CANCELLED',
+  ) {
+    return this.timeline.record({
+      userId: episode.userId,
+      conversationId: episode.conversationId,
+      sourceMessageId: episode.sourceMessageId,
+      subject: CompanionEventSubject.SHARED_EPISODE,
+      subjectId: episode.id,
+      eventType,
+      state,
+    });
   }
 
   private async supersedeConflictingMemories(memory: {
