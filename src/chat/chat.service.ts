@@ -15,6 +15,7 @@ import { OUTBOX_TOPIC_MEMORY_EXTRACT } from '../outbox/outbox.types';
 import { SkillPolicyResolverService } from '../skills/skill-policy-resolver.service';
 import { CompanionPresenceService } from '../companion/companion-presence.service';
 import { createDefaultPersonaDraft, normalizePersonaProfile, type PersonaGenerationPreferences } from '../agent/persona-profile';
+import { selectResponseAction } from '../agent/response-action';
 import type { CreateMessageDto } from './dto/create-message.dto';
 import type { GeneratePersonaDraftDto, UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 import type { ChatImageAttachment } from './chat.types';
@@ -91,6 +92,7 @@ export class ChatService {
       }),
       this.presence.buildAgentContext(conversation.userId, conversation.id),
     ]);
+    const responseAction = selectResponseAction({ content: input.content, memoryContext });
     const skillMetadata = skillPolicy.plugins.map((plugin) => ({
       id: plugin.pluginId,
       version: plugin.version,
@@ -136,7 +138,10 @@ export class ChatService {
         role: MessageRole.ASSISTANT,
         status: MessageStatus.STREAMING,
         content: '',
-        metadata: skillMetadata.length ? ({ skillPlugins: skillMetadata } as unknown as Prisma.InputJsonValue) : undefined,
+        metadata: ({
+          ...(skillMetadata.length ? { skillPlugins: skillMetadata } : {}),
+          responseAction,
+        } as unknown as Prisma.InputJsonValue),
         ...modelData,
       },
     });
@@ -291,6 +296,7 @@ export class ChatService {
           : undefined,
         reminderRequested,
         taskToolResult,
+        responseAction,
         messages: [
           ...history.map((message) => ({
             role: message.role === MessageRole.USER ? 'user' as const : 'assistant' as const,

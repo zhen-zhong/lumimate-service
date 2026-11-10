@@ -14,6 +14,8 @@
     "test:memory": "node --require ts-node/register --test src/memory/memory.service.spec.ts",
     "test:persona": "node --require ts-node/register --test src/agent/persona-profile.spec.ts",
     "test:presence": "node --require ts-node/register --test src/companion/companion-presence.service.spec.ts",
+    "test:response-action": "node --require ts-node/register --test src/agent/response-action.spec.ts",
+    "test:response-quality": "node --require ts-node/register --test src/agent/response-quality.spec.ts",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",

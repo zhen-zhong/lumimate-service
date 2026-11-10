@@ -11,6 +11,7 @@ import {
   type PersonaGenerationPreferences,
   type PersonaProfile,
 } from './persona-profile';
+import { RESPONSE_STYLE_GUARD, responseActionInstruction, type ResponseAction } from './response-action';
 
 export type AgentRunInput = {
   conversationId: string;
@@ -27,6 +28,7 @@ export type AgentRunInput = {
   reminderRequested?: boolean;
   imageCaption?: boolean;
   taskToolResult?: string;
+  responseAction?: ResponseAction;
 };
 
 export type PersonaDraftInput = {
@@ -101,7 +103,9 @@ export class AgentRunner {
           ? '这是图片生成成功后的配文步骤。权威事实：本次请求已经生成并保存了一张图片，图片附件已交付给用户。仅输出一句自然、温和的中文配文；不超过 40 个字，不要标题、Markdown、引号或生成过程说明。绝对不要说不能生成图片、没有照片、没有实体、无法发送图片，也不要拒绝或解释限制。'
           : null,
         input.taskToolResult ? `已执行受控任务工具，结果如下：${input.taskToolResult}。据此自然回答；不可声称未确认的修改或取消已经完成。` : null,
+        input.responseAction ? responseActionInstruction(input.responseAction) : null,
         '使用简洁中文回答；不确定的信息明确说明不确定。',
+        RESPONSE_STYLE_GUARD,
         SYSTEM_PROMPT,
       ]
         .filter(Boolean)
