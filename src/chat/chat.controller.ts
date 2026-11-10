@@ -22,6 +22,8 @@ const settingsResponse = {
     properties: {
       agentName: { type: 'string', example: 'LumiMate' },
       agentProfile: { type: 'string' },
+      personaProfile: { type: 'object', additionalProperties: true },
+      personaVersion: { type: 'integer', example: 1 },
       responseStyle: { type: 'string', example: '温和、简洁' },
       modelId: { type: 'string', example: 'deepseek-flash' },
       imageModelId: { type: 'string', example: 'gpt-image-2.5-flare' },

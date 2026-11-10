@@ -176,6 +176,8 @@ model Conversation {
   title               String?
   agentName           String    @default("LumiMate")
   agentProfile        String    @default("") @db.Text
+  personaProfile      Json?
+  personaVersion      Int       @default(1)
   responseStyle       String    @default("温和、简洁")
   modelId             String    @default("deepseek-flash")
   imageModelId        String    @default("gpt-image-2.5-flare")

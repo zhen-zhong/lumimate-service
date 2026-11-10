@@ -12,6 +12,7 @@
     "start:dev": "nest start --watch",
     "typecheck": "tsc --noEmit",
     "test:memory": "node --require ts-node/register --test src/memory/memory.service.spec.ts",
+    "test:persona": "node --require ts-node/register --test src/agent/persona-profile.spec.ts",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",

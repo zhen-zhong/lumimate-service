@@ -14,6 +14,7 @@ import { OutboxService } from '../outbox/outbox.service';
 import { OUTBOX_TOPIC_MEMORY_EXTRACT } from '../outbox/outbox.types';
 import { SkillPolicyResolverService } from '../skills/skill-policy-resolver.service';
 import { CompanionPresenceService } from '../companion/companion-presence.service';
+import { createDefaultPersonaDraft, normalizePersonaProfile, type PersonaGenerationPreferences } from '../agent/persona-profile';
 import type { CreateMessageDto } from './dto/create-message.dto';
 import type { GeneratePersonaDraftDto, UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 import type { ChatImageAttachment } from './chat.types';
@@ -279,6 +280,7 @@ export class ChatService {
         conversationId: internalConversationId,
         agentName: conversation.agentName,
         agentProfile: conversation.agentProfile,
+        personaProfile: this.personaProfile(conversation),
         responseStyle: conversation.responseStyle,
         modelId: conversation.modelId,
         memoryContext,
@@ -366,7 +368,8 @@ export class ChatService {
   }
 
   private async ensureConversation(externalId: string, userId: string) {
-    return this.prisma.conversation.upsert({
+    const defaults = createDefaultPersonaDraft();
+    const conversation = await this.prisma.conversation.upsert({
       where: { userId_externalId: { userId, externalId } },
       update: {},
       create: {
@@ -375,6 +378,22 @@ export class ChatService {
         contextMessageLimit: this.contextMessageLimit,
         modelId: DEFAULT_CHAT_MODEL_ID,
         imageModelId: DEFAULT_IMAGE_MODEL_ID,
+        agentName: defaults.agentName,
+        agentProfile: defaults.agentProfile,
+        personaProfile: defaults.personaProfile,
+        personaVersion: defaults.personaVersion,
+        responseStyle: defaults.responseStyle,
+      },
+    });
+    if (conversation.agentProfile.trim()) return conversation;
+    const existingDefaults = createDefaultPersonaDraft(conversation.agentName || 'LumiMate');
+    return this.prisma.conversation.update({
+      where: { id: conversation.id },
+      data: {
+        agentProfile: existingDefaults.agentProfile,
+        personaProfile: existingDefaults.personaProfile,
+        personaVersion: existingDefaults.personaVersion,
+        responseStyle: conversation.responseStyle.trim() || existingDefaults.responseStyle,
       },
     });
   }
@@ -386,6 +405,7 @@ export class ChatService {
     conversation: {
       agentName: string;
       agentProfile: string;
+      personaProfile?: Prisma.JsonValue | null;
       responseStyle: string;
       modelId: string;
     };
@@ -399,6 +419,7 @@ export class ChatService {
         conversationId: input.conversationId,
         agentName: input.conversation.agentName,
         agentProfile: input.conversation.agentProfile,
+        personaProfile: this.personaProfile(input.conversation),
         responseStyle: input.conversation.responseStyle,
         modelId: input.conversation.modelId,
         imageCaption: true,
@@ -499,9 +520,30 @@ export class ChatService {
     if (settings.imageModelId && !await this.models.findEnabled(settings.imageModelId, 'image-generation')) {
       throw new BadRequestException('所选图片创作模型不存在或已停用');
     }
+    const { personaProfile: requestedPersonaProfile, ...otherSettings } = settings;
+    const nextName = settings.agentName?.trim() || conversation.agentName;
+    const fallback = createDefaultPersonaDraft(nextName);
+    const explicitPersona = requestedPersonaProfile === undefined
+      ? undefined
+      : requestedPersonaProfile === null
+        ? null
+        : normalizePersonaProfile(requestedPersonaProfile, nextName);
+    if (requestedPersonaProfile && !explicitPersona) {
+      throw new BadRequestException('角色档案格式无效');
+    }
     const updatedConversation = await this.prisma.conversation.update({
       where: { id: conversation.id },
-      data: settings,
+      data: {
+        ...otherSettings,
+        agentName: nextName,
+        agentProfile: settings.agentProfile !== undefined
+          ? settings.agentProfile.trim() || fallback.agentProfile
+          : undefined,
+        responseStyle: settings.responseStyle !== undefined
+          ? settings.responseStyle.trim() || fallback.responseStyle
+          : undefined,
+        ...(explicitPersona === null ? { personaProfile: Prisma.JsonNull } : explicitPersona ? { personaProfile: explicitPersona as Prisma.InputJsonValue } : {}),
+      },
     });
     return this.serializeSettings(updatedConversation);
   }
@@ -518,7 +560,9 @@ export class ChatService {
         agentName: input.agentName?.trim() || conversation.agentName,
         agentProfile: input.agentProfile?.trim() || conversation.agentProfile,
         responseStyle: input.responseStyle?.trim() || conversation.responseStyle,
+        personaProfile: this.personaProfile(conversation),
       },
+      preferences: this.personaPreferences(input),
     });
   }
 
@@ -553,6 +597,8 @@ export class ChatService {
   private serializeSettings(conversation: {
     agentName: string;
     agentProfile: string;
+    personaProfile?: Prisma.JsonValue | null;
+    personaVersion?: number;
     responseStyle: string;
     modelId: string;
     imageModelId: string;
@@ -562,12 +608,27 @@ export class ChatService {
     return {
       agentName: conversation.agentName,
       agentProfile: conversation.agentProfile,
+      personaProfile: this.personaProfile(conversation),
+      personaVersion: conversation.personaVersion || 1,
       responseStyle: conversation.responseStyle,
       modelId: conversation.modelId,
       imageModelId: conversation.imageModelId,
       imageUseContext: conversation.imageUseContext,
       contextMessageLimit: conversation.contextMessageLimit,
       maxContextMessageLimit: HARD_MAX_CONTEXT_MESSAGE_LIMIT,
+    };
+  }
+
+  private personaProfile(conversation: { agentName: string; personaProfile?: Prisma.JsonValue | null }) {
+    return normalizePersonaProfile(conversation.personaProfile, conversation.agentName);
+  }
+
+  private personaPreferences(input: GeneratePersonaDraftDto): PersonaGenerationPreferences {
+    return {
+      relationshipType: input.relationshipType?.trim() || undefined,
+      activityLevel: input.activityLevel?.trim() || undefined,
+      speechTone: input.speechTone?.trim() || undefined,
+      proactiveBoundary: input.proactiveBoundary?.trim() || undefined,
     };
   }
 

@@ -2,12 +2,22 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { AI_CHAT_ROUTER, type AiChatMessage, type AiChatProvider, type AiChatStreamEvent, type AiTaskToolCall } from '../ai/interfaces/ai-chat-provider';
 import { AiModelCatalogService } from '../ai/ai-model-catalog.service';
+import {
+  formatPersonaProfile,
+  createDefaultPersonaDraft,
+  normalizePersonaDraft,
+  normalizePersonaProfile,
+  type PersonaDraft,
+  type PersonaGenerationPreferences,
+  type PersonaProfile,
+} from './persona-profile';
 
 export type AgentRunInput = {
   conversationId: string;
   messages: AiChatMessage[];
   agentName: string;
   agentProfile: string;
+  personaProfile?: PersonaProfile | null;
   responseStyle: string;
   modelId: string;
   memoryContext?: string;
@@ -25,13 +35,9 @@ export type PersonaDraftInput = {
     agentName: string;
     agentProfile: string;
     responseStyle: string;
+    personaProfile?: PersonaProfile | null;
   };
-};
-
-export type PersonaDraft = {
-  agentName: string;
-  agentProfile: string;
-  responseStyle: string;
+  preferences?: PersonaGenerationPreferences;
 };
 
 const SYSTEM_PROMPT = [
@@ -48,34 +54,21 @@ const PERSONA_DRAFT_PROMPT = [
   '角色应先接住具体情绪或细节，再表达看法；不需要每次都提问或提供建议。',
   '若已有草稿，保留其有辨识度的部分并补足空白；没有草稿时创建自然、克制、有一点主见的默认角色。',
   '只输出一个合法 JSON 对象，不要 Markdown、代码块或额外文字。',
-  'JSON 必须且只能含：agentName（2-16 字）、agentProfile（300-1200 字）、responseStyle（20-120 字）。',
+  'JSON 必须且只能含：agentName（2-16 字）、agentProfile（300-1200 字）、responseStyle（20-120 字）、personaProfile。',
+  'personaProfile 必须且只能含 identity、temperament、speech、relationshipStyle、interests、boundaries、examples；examples 为 1–4 条短句数组。',
 ].join('\n');
-
-function personaText(value: unknown, maxLength: number) {
-  return typeof value === 'string' ? value.trim().replace(/\s+/gu, ' ').slice(0, maxLength) : '';
-}
 
 function parsePersonaDraft(content: string, fallback: PersonaDraft): PersonaDraft {
   const cleaned = content.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start < 0 || end <= start) throw new Error('角色生成结果格式错误，请重试');
-
-  let parsed: unknown;
   try {
-    parsed = JSON.parse(cleaned.slice(start, end + 1));
-  } catch {
+    return normalizePersonaDraft(JSON.parse(cleaned.slice(start, end + 1)), fallback);
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('角色生成结果')) throw error;
     throw new Error('角色生成结果格式错误，请重试');
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('角色生成结果格式错误，请重试');
-  }
-  const draft = parsed as Record<string, unknown>;
-  const agentName = personaText(draft.agentName, 32) || fallback.agentName;
-  const agentProfile = personaText(draft.agentProfile, 2_000);
-  const responseStyle = personaText(draft.responseStyle, 500);
-  if (!agentProfile || !responseStyle) throw new Error('角色生成结果不完整，请重试');
-  return { agentName, agentProfile, responseStyle };
 }
 
 @Injectable()
@@ -94,6 +87,7 @@ export class AgentRunner {
       systemPrompt: [
         `你是 ${input.agentName}，一位温和、可靠的长期陪伴助手。`,
         input.agentProfile ? `角色设定：${input.agentProfile}` : null,
+        input.personaProfile ? formatPersonaProfile(input.personaProfile) : null,
         `回复风格：${input.responseStyle}。`,
         input.memoryContext || null,
         input.presenceContext || null,
@@ -126,15 +120,17 @@ export class AgentRunner {
       systemPrompt: PERSONA_DRAFT_PROMPT,
       messages: [{
         role: 'user',
-        content: `当前草稿：${JSON.stringify(input.current)}`,
+        content: `当前草稿：${JSON.stringify(input.current)}\n生成偏好：${JSON.stringify(input.preferences ?? {})}`,
       }],
     })) {
       if (event.type === 'delta') content += event.delta;
     }
+    const fallback = createDefaultPersonaDraft(input.current.agentName || 'LumiMate');
     return parsePersonaDraft(content, {
-      agentName: input.current.agentName || 'LumiMate',
-      agentProfile: input.current.agentProfile,
-      responseStyle: input.current.responseStyle || '自然、克制、有自己的看法',
+      ...fallback,
+      agentProfile: input.current.agentProfile || fallback.agentProfile,
+      responseStyle: input.current.responseStyle || fallback.responseStyle,
+      personaProfile: normalizePersonaProfile(input.current.personaProfile, fallback.agentName) ?? fallback.personaProfile,
     });
   }
 
