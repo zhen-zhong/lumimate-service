@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable, NotFoundException, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { AgentIntentStatus, AgentIntentType, CompanionEventSubject, MessageRole, Prisma } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { randomUUID } from 'node:crypto';
@@ -58,6 +58,10 @@ function isQuietNow(timezone: string, start?: string | null, end?: string | null
   return startMinutes < endMinutes
     ? current >= startMinutes && current < endMinutes
     : current >= startMinutes || current < endMinutes;
+}
+
+export function proactiveTitle(episodeTitle: string) {
+  return `想起你留下的「${episodeTitle}」。不急着回应，想继续时再打开看看。`;
 }
 
 function localDateParts(timezone: string, date = new Date()) {
@@ -129,7 +133,8 @@ function parseReminder(content: string, timezone: string) {
 export type ReminderCandidate = NonNullable<ReturnType<typeof parseReminder>>;
 
 @Injectable()
-export class TasksService implements OnModuleInit {
+export class TasksService implements OnModuleInit, OnModuleDestroy {
+  private proactiveTimer?: NodeJS.Timeout;
   constructor(
     private readonly prisma: PrismaService,
     private readonly push: PushService,
@@ -144,6 +149,12 @@ export class TasksService implements OnModuleInit {
       select: { id: true, dueAt: true },
     });
     await Promise.all(scheduled.map((intent) => this.enqueue(intent.id, intent.dueAt)));
+    this.proactiveTimer = setInterval(() => void this.scheduleProactiveCandidates().catch(() => undefined), 15 * 60_000);
+    this.proactiveTimer.unref();
+  }
+
+  onModuleDestroy() {
+    if (this.proactiveTimer) clearInterval(this.proactiveTimer);
   }
 
   async create(conversationId: string, userId: string, input: CreateIntentDto) {
@@ -214,6 +225,11 @@ export class TasksService implements OnModuleInit {
     await this.recordIntent(scheduled, 'intent.scheduled');
     await this.outbox.publish(outbox.id);
     return scheduled;
+  }
+
+  async scheduleProactiveCandidates(now = new Date()) {
+    const policies = await this.prisma.proactivePolicy.findMany({ where: { enabled: true }, select: { userId: true } });
+    await Promise.all(policies.map(({ userId }) => this.scheduleProactiveForUser(userId, now).catch(() => undefined)));
   }
 
   async confirm(conversationId: string, intentId: string) {
@@ -421,6 +437,33 @@ export class TasksService implements OnModuleInit {
       attempts: 3,
       backoff: { type: 'exponential', delay: 1_000 },
     });
+  }
+
+  private async scheduleProactiveForUser(userId: string, now: Date) {
+    const timezone = 'Asia/Shanghai';
+    const allowed = await this.checkProactivePolicy(userId, timezone);
+    if (!allowed.allowed) return;
+    const conversation = await this.prisma.conversation.findFirst({
+      where: {
+        userId,
+        sharedEpisodes: { some: { status: 'CONFIRMED', archivedAt: null, deletedAt: null } },
+        user: { pushDevices: { some: { enabled: true } } },
+        intents: { none: { type: AgentIntentType.PROACTIVE, status: { in: [AgentIntentStatus.AWAITING_CONFIRMATION, AgentIntentStatus.SCHEDULED, AgentIntentStatus.RUNNING] } } },
+      },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, sharedEpisodes: { where: { status: 'CONFIRMED', archivedAt: null, deletedAt: null }, orderBy: { updatedAt: 'desc' }, take: 1, select: { id: true, title: true, kind: true, resolution: true, updatedAt: true } } },
+    });
+    const episode = conversation?.sharedEpisodes[0];
+    if (!conversation || !episode) return;
+    const title = proactiveTitle(episode.title);
+    const intent = await this.createScheduled(conversation.id, userId, {
+      type: AgentIntentType.PROACTIVE,
+      title,
+      dueAt: new Date(now.getTime() + 60_000),
+      timezone,
+      payload: { trigger: 'shared_episode', episodeId: episode.id, kind: episode.kind, resolution: episode.resolution, triggeredAt: now.toISOString() },
+    });
+    await this.recordIntent(intent, 'proactive.triggered', { trigger: 'shared_episode', episodeId: episode.id, reason: '已确认共同经历' });
   }
 
   private async requireIntent(conversationId: string, intentId: string) {

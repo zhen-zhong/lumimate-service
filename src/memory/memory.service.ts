@@ -442,13 +442,23 @@ export class MemoryService {
     });
   }
 
-  async updateProactivePolicy(userId: string, input: UpdateProactivePolicyDto) {
-    return this.prisma.proactivePolicy.upsert({
+  async updateProactivePolicy(userId: string, input: UpdateProactivePolicyDto, conversationId?: string) {
+    const policy = await this.prisma.proactivePolicy.upsert({
       where: { userId },
       update: input,
       create: { userId, ...input },
       select: proactivePolicySelect,
     });
+    await this.timeline.record({
+      userId,
+      conversationId,
+      subject: CompanionEventSubject.AGENT_INTENT,
+      subjectId: `proactive-policy:${userId}`,
+      eventType: input.enabled === false ? 'proactive.policy_disabled' : 'proactive.policy_updated',
+      state: input.enabled === false ? 'CANCELLED' : 'COMPLETED',
+      detail: { enabled: policy.enabled, dailyLimit: policy.dailyLimit, minimumIntervalMinutes: policy.minimumIntervalMinutes },
+    });
+    return policy;
   }
 
   async markInteraction(userId: string, conversationId: string) {

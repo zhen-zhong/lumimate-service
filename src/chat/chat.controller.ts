@@ -323,6 +323,6 @@ export class ChatController {
   @ApiOperation({ summary: '更新主动陪伴策略' })
   async updateProactivePolicy(@Param('conversationId') conversationId: string, @Body() body: UpdateProactivePolicyDto, @CurrentUser() user: AuthenticatedUser) {
     const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
-    return this.memories.updateProactivePolicy(conversation.userId, body);
+    return this.memories.updateProactivePolicy(conversation.userId, body, conversation.id);
   }
 }

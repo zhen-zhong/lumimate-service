@@ -166,3 +166,12 @@ test('只为明确暂缓的话创建一次未完话题候选', async () => {
   assert.equal(result?.status, 'CANDIDATE');
   assert.equal(events[0]?.eventType, 'shared_episode.unfinished_candidate_created');
 });
+
+test('关闭主动陪伴写入可追溯时间线', async () => {
+  const events: Array<Record<string, unknown>> = [];
+  const prisma = { proactivePolicy: { upsert: async () => ({ enabled: false, dailyLimit: 1, minimumIntervalMinutes: 720 }) } } as unknown as PrismaService;
+  const timeline = { record: async (event: Record<string, unknown>) => { events.push(event); return event; } } as unknown as CompanionTimelineService;
+  await new MemoryService(prisma, timeline).updateProactivePolicy('user-1', { enabled: false }, 'conversation-1');
+  assert.equal(events[0]?.eventType, 'proactive.policy_disabled');
+  assert.equal(events[0]?.state, 'CANCELLED');
+});
