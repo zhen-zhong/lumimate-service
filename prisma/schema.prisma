@@ -56,6 +56,20 @@ enum MemoryLayer {
   USER_FACT
 }
 
+enum SharedEpisodeKind {
+  TODAY_FRAGMENT
+  UNFINISHED_THREAD
+  SMALL_AGREEMENT
+}
+
+enum SharedEpisodeResolution {
+  OPEN
+  COMPLETED
+  DEFERRED
+  ABANDONED
+  CLOSED
+}
+
 enum AgentIntentType {
   REMINDER
   FOLLOW_UP
@@ -422,6 +436,8 @@ model SharedEpisode {
   title           String
   content         String       @db.Text
   status          String       @default("CONFIRMED")
+  kind            SharedEpisodeKind @default(TODAY_FRAGMENT)
+  resolution      SharedEpisodeResolution @default(OPEN)
   occurredAt      DateTime     @default(now())
   archivedAt      DateTime?
   deletedAt       DateTime?

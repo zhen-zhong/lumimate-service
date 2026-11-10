@@ -122,6 +122,12 @@ export class ChatService {
         ...modelData,
       },
     });
+    void this.memories.createUnfinishedThreadCandidate({
+      userId: conversation.userId,
+      conversationId: internalConversationId,
+      sourceMessageId: userMessage.id,
+      content: input.content,
+    }).catch((error) => this.logger.warn(`未完的话候选创建失败：${error instanceof Error ? error.message : String(error)}`));
     await this.media.attachToMessage({
       userId: conversation.userId,
       conversationId: internalConversationId,

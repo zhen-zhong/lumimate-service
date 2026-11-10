@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { CompanionEventSubject, MemoryCategory, MemoryLayer, MemoryStatus, Prisma } from '@prisma/client';
+import { CompanionEventSubject, MemoryCategory, MemoryLayer, MemoryStatus, Prisma, SharedEpisodeKind, SharedEpisodeResolution } from '@prisma/client';
 
 import { PrismaService } from '../database/prisma.service';
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
@@ -12,6 +12,13 @@ import type { UpdateSharedEpisodeDto } from './dto/update-shared-episode.dto';
 import type { ExtractMemoryJob, MemoryCandidate } from './memory.types';
 
 const MAX_RECALLED_MEMORIES = 8;
+
+const UNFINISHED_THREAD_PATTERN = /(?:下次|回头|以后)(?:再|再慢慢)?说|(?:我|这)(?:还)?没说完|先(?:不|别)说了|改天再聊/u;
+
+export function unfinishedThreadContent(content: string) {
+  const normalized = content.trim().replace(/\s+/gu, ' ');
+  return UNFINISHED_THREAD_PATTERN.test(normalized) ? normalized.slice(0, 500) : null;
+}
 
 const proactivePolicySelect = Prisma.validator<Prisma.ProactivePolicySelect>()({
   enabled: true,
@@ -205,11 +212,44 @@ export class MemoryService {
         title,
         content,
         sourceMessageId: source?.id,
+        kind: input.kind ?? SharedEpisodeKind.TODAY_FRAGMENT,
         ...(input.occurredAt ? { occurredAt: new Date(input.occurredAt) } : {}),
       },
     });
     await this.recordEpisodeEvent(episode, 'shared_episode.created', 'COMPLETED');
     return episode;
+  }
+
+  async createUnfinishedThreadCandidate(input: { userId: string; conversationId: string; sourceMessageId: string; content: string }) {
+    const content = unfinishedThreadContent(input.content);
+    if (!content) return null;
+    const existing = await this.prisma.sharedEpisode.findFirst({
+      where: { conversationId: input.conversationId, sourceMessageId: input.sourceMessageId, kind: SharedEpisodeKind.UNFINISHED_THREAD },
+    });
+    if (existing) return existing;
+    const episode = await this.prisma.sharedEpisode.create({
+      data: {
+        userId: input.userId,
+        conversationId: input.conversationId,
+        sourceMessageId: input.sourceMessageId,
+        title: '还没说完的话',
+        content,
+        status: 'CANDIDATE',
+        kind: SharedEpisodeKind.UNFINISHED_THREAD,
+      },
+    });
+    await this.recordEpisodeEvent(episode, 'shared_episode.unfinished_candidate_created', 'AWAITING_CONFIRMATION');
+    return episode;
+  }
+
+  async confirmEpisode(conversationId: string, id: string) {
+    await this.requireConversationEpisode(conversationId, id);
+    const updated = await this.prisma.sharedEpisode.update({
+      where: { id },
+      data: { status: 'CONFIRMED', archivedAt: null, deletedAt: null },
+    });
+    await this.recordEpisodeEvent(updated, 'shared_episode.confirmed', 'COMPLETED');
+    return updated;
   }
 
   async updateEpisode(conversationId: string, id: string, input: UpdateSharedEpisodeDto) {
@@ -220,6 +260,7 @@ export class MemoryService {
         ...(input.title !== undefined ? { title: input.title.trim() } : {}),
         ...(input.content !== undefined ? { content: input.content.trim() } : {}),
         ...(input.occurredAt ? { occurredAt: new Date(input.occurredAt) } : {}),
+        ...(input.resolution !== undefined ? { resolution: input.resolution } : {}),
         archivedAt: null,
       },
     });
@@ -231,7 +272,7 @@ export class MemoryService {
     await this.requireConversationEpisode(conversationId, id);
     const updated = await this.prisma.sharedEpisode.update({
       where: { id },
-      data: { archivedAt: new Date() },
+      data: { archivedAt: new Date(), resolution: SharedEpisodeResolution.CLOSED },
     });
     await this.recordEpisodeEvent(updated, 'shared_episode.archived', 'EXPIRED');
     return updated;
@@ -438,7 +479,7 @@ export class MemoryService {
   private recordEpisodeEvent(
     episode: { id: string; userId: string; conversationId: string; sourceMessageId: string | null },
     eventType: string,
-    state: 'COMPLETED' | 'EXPIRED' | 'CANCELLED',
+    state: 'AWAITING_CONFIRMATION' | 'COMPLETED' | 'EXPIRED' | 'CANCELLED',
   ) {
     return this.timeline.record({
       userId: episode.userId,

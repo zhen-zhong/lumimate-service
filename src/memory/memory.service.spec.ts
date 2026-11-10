@@ -1,11 +1,11 @@
 import * as assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { MemoryCategory, MemoryStatus } from '@prisma/client';
+import { MemoryCategory, MemoryStatus, SharedEpisodeKind } from '@prisma/client';
 
 import { CompanionTimelineService } from '../companion/companion-timeline.service';
 import { PrismaService } from '../database/prisma.service';
-import { extractRuleMemoryCandidates, MemoryService } from './memory.service';
+import { extractRuleMemoryCandidates, MemoryService, unfinishedThreadContent } from './memory.service';
 
 test('为姓名、居住地和工作地提取不同的稳定键', () => {
   const candidates = [
@@ -144,4 +144,25 @@ test('共同经历只接受本会话来源，并支持归档和删除审计', as
   assert.equal(created[0]?.content, '一起聊了下雨天想做的事');
   assert.equal(events.map((event) => event.eventType).join(','), 'shared_episode.created,shared_episode.archived,shared_episode.deleted');
   assert.equal(events.every((event) => event.subject === 'SHARED_EPISODE'), true);
+});
+
+test('只为明确暂缓的话创建一次未完话题候选', async () => {
+  assert.equal(unfinishedThreadContent('这件事我们下次再说。'), '这件事我们下次再说。');
+  assert.equal(unfinishedThreadContent('今天天气很好。'), null);
+
+  const events: Array<Record<string, unknown>> = [];
+  const prisma = {
+    sharedEpisode: {
+      findFirst: async () => null,
+      create: async ({ data }: { data: Record<string, unknown> }) => ({ id: 'episode-1', ...data }),
+    },
+  } as unknown as PrismaService;
+  const timeline = { record: async (event: Record<string, unknown>) => { events.push(event); return event; } } as unknown as CompanionTimelineService;
+  const result = await new MemoryService(prisma, timeline).createUnfinishedThreadCandidate({
+    userId: 'user-1', conversationId: 'conversation-1', sourceMessageId: 'message-1', content: '这件事我们下次再说。',
+  });
+
+  assert.equal(result?.kind, SharedEpisodeKind.UNFINISHED_THREAD);
+  assert.equal(result?.status, 'CANDIDATE');
+  assert.equal(events[0]?.eventType, 'shared_episode.unfinished_candidate_created');
 });

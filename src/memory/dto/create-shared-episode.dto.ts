@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
+import { SharedEpisodeKind } from '@prisma/client';
+import { IsEnum, IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CreateSharedEpisodeDto {
   @ApiProperty({ maxLength: 120 })
@@ -16,6 +17,11 @@ export class CreateSharedEpisodeDto {
   @IsOptional()
   @IsString()
   sourceMessageId?: string;
+
+  @ApiPropertyOptional({ enum: SharedEpisodeKind, default: SharedEpisodeKind.TODAY_FRAGMENT })
+  @IsOptional()
+  @IsEnum(SharedEpisodeKind)
+  kind?: SharedEpisodeKind;
 
   @ApiPropertyOptional({ format: 'date-time' })
   @IsOptional()

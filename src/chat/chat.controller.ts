@@ -184,6 +184,17 @@ export class ChatController {
     return this.memories.getEpisodeProvenance(conversation.id, episodeId);
   }
 
+  @Post(':conversationId/shared-episodes/:episodeId/confirm')
+  @ApiOperation({ summary: '确认共同经历；确认后才会在相关对话中被角色自然提及' })
+  async confirmSharedEpisode(
+    @Param('conversationId') conversationId: string,
+    @Param('episodeId') episodeId: string,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    const conversation = await this.chatService.getConversationIdentity(conversationId, user.userId);
+    return this.memories.confirmEpisode(conversation.id, episodeId);
+  }
+
   @Put(':conversationId/shared-episodes/:episodeId')
   @ApiOperation({ summary: '编辑共同经历；编辑后恢复为可召回状态' })
   async updateSharedEpisode(

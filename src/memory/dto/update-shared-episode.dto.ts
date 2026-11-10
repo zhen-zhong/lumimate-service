@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
+import { SharedEpisodeResolution } from '@prisma/client';
+import { IsEnum, IsISO8601, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class UpdateSharedEpisodeDto {
   @ApiPropertyOptional({ maxLength: 120 })
@@ -18,4 +19,9 @@ export class UpdateSharedEpisodeDto {
   @IsOptional()
   @IsISO8601()
   occurredAt?: string;
+
+  @ApiPropertyOptional({ enum: SharedEpisodeResolution })
+  @IsOptional()
+  @IsEnum(SharedEpisodeResolution)
+  resolution?: SharedEpisodeResolution;
 }
