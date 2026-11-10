@@ -44,3 +44,29 @@ export class UpdateChatSettingsDto {
   @Max(1_000)
   contextMessageLimit?: number;
 }
+
+export class GeneratePersonaDraftDto {
+  @ApiPropertyOptional({ description: '当前页面选择的聊天模型 ID；未传时使用会话已保存模型' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  modelId?: string;
+
+  @ApiPropertyOptional({ description: '当前角色名称草稿，供 AI 延续或改写', maxLength: 32 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  agentName?: string;
+
+  @ApiPropertyOptional({ description: '当前角色设定草稿，供 AI 延续或改写', maxLength: 2_000 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(2_000)
+  agentProfile?: string;
+
+  @ApiPropertyOptional({ description: '当前回复风格草稿，供 AI 延续或改写', maxLength: 500 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  responseStyle?: string;
+}

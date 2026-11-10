@@ -19,10 +19,64 @@ export type AgentRunInput = {
   taskToolResult?: string;
 };
 
+export type PersonaDraftInput = {
+  modelId: string;
+  current: {
+    agentName: string;
+    agentProfile: string;
+    responseStyle: string;
+  };
+};
+
+export type PersonaDraft = {
+  agentName: string;
+  agentProfile: string;
+  responseStyle: string;
+};
+
 const SYSTEM_PROMPT = [
   '不得声称已经执行提醒、查询附近地点、读取文件或控制设备，除非对应工具已实际返回结果。',
   '提醒是否可创建由服务端在回复结束后解析；不得因无法直接控制手机而拒绝提醒，也不得承诺提醒已创建或一定会推送。',
 ].join('\n');
+
+const PERSONA_DRAFT_PROMPT = [
+  '你是角色设计师。为中文 AI 陪伴产品生成一个可长期相处的虚拟角色草稿。',
+  '目标是有性格的陪伴角色，不是心理咨询师、客服或泛泛的“温柔 AI”。',
+  '角色必须有：稳定身份、性格张力、表达习惯、关系方式、兴趣或日常节奏、互动边界。',
+  '角色可以有虚拟日程和角色世界观，但不得冒充真人、现实经历、线下活动、真实拍摄或离线持续观察。',
+  '不得使用“作为 AI”“我是人工智能”“我会一直等你”“我永远都在”等模板句；不得情感绑架、诱导依赖、贬低现实关系。',
+  '角色应先接住具体情绪或细节，再表达看法；不需要每次都提问或提供建议。',
+  '若已有草稿，保留其有辨识度的部分并补足空白；没有草稿时创建自然、克制、有一点主见的默认角色。',
+  '只输出一个合法 JSON 对象，不要 Markdown、代码块或额外文字。',
+  'JSON 必须且只能含：agentName（2-16 字）、agentProfile（300-1200 字）、responseStyle（20-120 字）。',
+].join('\n');
+
+function personaText(value: unknown, maxLength: number) {
+  return typeof value === 'string' ? value.trim().replace(/\s+/gu, ' ').slice(0, maxLength) : '';
+}
+
+function parsePersonaDraft(content: string, fallback: PersonaDraft): PersonaDraft {
+  const cleaned = content.trim().replace(/^```(?:json)?\s*/iu, '').replace(/\s*```$/u, '');
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('角色生成结果格式错误，请重试');
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    throw new Error('角色生成结果格式错误，请重试');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('角色生成结果格式错误，请重试');
+  }
+  const draft = parsed as Record<string, unknown>;
+  const agentName = personaText(draft.agentName, 32) || fallback.agentName;
+  const agentProfile = personaText(draft.agentProfile, 2_000);
+  const responseStyle = personaText(draft.responseStyle, 500);
+  if (!agentProfile || !responseStyle) throw new Error('角色生成结果不完整，请重试');
+  return { agentName, agentProfile, responseStyle };
+}
 
 @Injectable()
 export class AgentRunner {
@@ -59,6 +113,28 @@ export class AgentRunner {
         .filter(Boolean)
         .join('\n'),
       messages: input.messages,
+    });
+  }
+
+  async generatePersonaDraft(input: PersonaDraftInput): Promise<PersonaDraft> {
+    if (!await this.models.findEnabled(input.modelId)) {
+      throw new Error('当前聊天模型已停用，请在高级设置中重新选择');
+    }
+    let content = '';
+    for await (const event of this.provider.streamChat({
+      modelId: input.modelId,
+      systemPrompt: PERSONA_DRAFT_PROMPT,
+      messages: [{
+        role: 'user',
+        content: `当前草稿：${JSON.stringify(input.current)}`,
+      }],
+    })) {
+      if (event.type === 'delta') content += event.delta;
+    }
+    return parsePersonaDraft(content, {
+      agentName: input.current.agentName || 'LumiMate',
+      agentProfile: input.current.agentProfile,
+      responseStyle: input.current.responseStyle || '自然、克制、有自己的看法',
     });
   }
 

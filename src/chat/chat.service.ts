@@ -15,7 +15,7 @@ import { OUTBOX_TOPIC_MEMORY_EXTRACT } from '../outbox/outbox.types';
 import { SkillPolicyResolverService } from '../skills/skill-policy-resolver.service';
 import { CompanionPresenceService } from '../companion/companion-presence.service';
 import type { CreateMessageDto } from './dto/create-message.dto';
-import type { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
+import type { GeneratePersonaDraftDto, UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 import type { ChatImageAttachment } from './chat.types';
 
 export type ChatEvent = {
@@ -504,6 +504,22 @@ export class ChatService {
       data: settings,
     });
     return this.serializeSettings(updatedConversation);
+  }
+
+  async generatePersonaDraft(conversationId: string, userId: string, input: GeneratePersonaDraftDto) {
+    const conversation = await this.ensureConversationModels(await this.ensureConversation(conversationId, userId));
+    const modelId = input.modelId || conversation.modelId;
+    if (!await this.models.findEnabled(modelId)) {
+      throw new BadRequestException('所选聊天模型不存在或已停用');
+    }
+    return this.agentRunner.generatePersonaDraft({
+      modelId,
+      current: {
+        agentName: input.agentName?.trim() || conversation.agentName,
+        agentProfile: input.agentProfile?.trim() || conversation.agentProfile,
+        responseStyle: input.responseStyle?.trim() || conversation.responseStyle,
+      },
+    });
   }
 
   async getImageAttachment(conversationId: string, userId: string, messageId: string, attachmentIndex: number) {

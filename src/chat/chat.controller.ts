@@ -4,7 +4,7 @@ import type { FastifyReply } from 'fastify';
 
 import { ChatService } from './chat.service';
 import { CreateMessageDto } from './dto/create-message.dto';
-import { UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
+import { GeneratePersonaDraftDto, UpdateChatSettingsDto } from './dto/update-chat-settings.dto';
 import { MemoryService } from '../memory/memory.service';
 import { UpdateMemoryDto } from '../memory/dto/update-memory.dto';
 import { UpdateProactivePolicyDto } from '../memory/dto/update-proactive-policy.dto';
@@ -132,6 +132,16 @@ export class ChatController {
     @CurrentUser() user: AuthenticatedUser,
   ) {
     return this.chatService.updateSettings(conversationId, user.userId, body);
+  }
+
+  @Post(':conversationId/persona/draft')
+  @ApiOperation({ summary: '使用当前选择的聊天模型生成角色设定草稿；不会自动保存' })
+  generatePersonaDraft(
+    @Param('conversationId') conversationId: string,
+    @Body() body: GeneratePersonaDraftDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.chatService.generatePersonaDraft(conversationId, user.userId, body);
   }
 
   @Get(':conversationId/memories')
